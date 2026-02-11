@@ -126,7 +126,48 @@ PRIVATE_KEY="$PRIVATE_KEY" RPC_URL="$RPC_URL" KMS_CONTRACT_ADDRESS="$KMS_CONTRAC
 
 ---
 
-## 5. 部署 KMS（生产模式：Direct RPC）
+## 5. 构建并推送 dstack-kms 镜像（可选但推荐）
+
+如果你希望使用“自己刚构建的最新镜像”，可执行以下步骤。
+
+```bash
+git clone https://github.com/Phala-Network/meta-dstack-cloud.git
+cd meta-dstack-cloud
+git submodule update --init --recursive dstack
+cd dstack/kms/dstack-app/builder
+
+# 目标镜像仓库
+export IMAGE_REPO=cr.kvin.wang/dstack-kms
+
+# 使用 dstack-cloud 主仓库 master 最新提交构建
+export DSTACK_SRC_URL=https://github.com/Phala-Network/dstack-cloud.git
+export DSTACK_REV=$(git ls-remote "$DSTACK_SRC_URL" refs/heads/master | awk '{print $1}')
+
+# 确保 buildx builder 可用
+docker buildx inspect buildkit_20 >/dev/null 2>&1 || \
+  docker buildx create --use --driver-opt image=moby/buildkit:v0.20.2 --name buildkit_20
+
+docker buildx build \
+  --builder buildkit_20 \
+  --platform linux/amd64 \
+  --build-arg DSTACK_SRC_URL="$DSTACK_SRC_URL" \
+  --build-arg DSTACK_REV="$DSTACK_REV" \
+  --build-arg SOURCE_DATE_EPOCH="$(date +%s)" \
+  --push \
+  -t "${IMAGE_REPO}:latest" \
+  -t "${IMAGE_REPO}:nitro" \
+  .
+```
+
+构建后，在 `workshop/kms/.env` 中设置：
+
+```bash
+KMS_IMAGE=cr.kvin.wang/dstack-kms:latest
+```
+
+---
+
+## 6. 部署 KMS（生产模式：Direct RPC）
 
 将本仓库提供的 compose 模板放入 `dstack-cloud new` 生成的项目目录。
 
@@ -168,7 +209,7 @@ curl -sk "https://<KMS_DOMAIN>:12001/prpc/GetMeta?json" -d '{}' | jq .
 
 ---
 
-## 6. Nitro Host 部署示例（AWS）
+## 7. Nitro Host 部署示例（AWS）
 
 > 参考 demo 仓库的 `deploy_host.sh`，下例为直接可跑示例。
 
@@ -188,7 +229,7 @@ KEY_PATH=./nitro-enclave-key.pem \
 
 ---
 
-## 7. Nitro Enclave 拉取密钥（Direct RPC）
+## 8. Nitro Enclave 拉取密钥（Direct RPC）
 
 ```bash
 cd dstack-nitro-enclave-app
@@ -208,7 +249,7 @@ KEY_PATH=./nitro-enclave-key.pem \
 
 ---
 
-## 8. 部署 KMS（生产模式：Light Client / Helios）
+## 9. 部署 KMS（生产模式：Light Client / Helios）
 
 ```bash
 # 使用本仓库 light 模板
@@ -239,11 +280,11 @@ curl -s "http://<KMS_DOMAIN>:18000/" | jq .
 curl -sk "https://<KMS_DOMAIN>:12001/prpc/GetMeta?json" -d '{}' | jq .
 ```
 
-Nitro 侧验证与第 7 章相同，只需保持 `KMS_URL` 不变。
+Nitro 侧验证与第 8 章相同，只需保持 `KMS_URL` 不变。
 
 ---
 
-## 9. 生产安全建议
+## 10. 生产安全建议
 
 1. 不要在生产长期使用 `ZERO32`。
 2. 不要在生产长期使用 `--allow-any-device`。
@@ -253,7 +294,7 @@ Nitro 侧验证与第 7 章相同，只需保持 `KMS_URL` 不变。
 
 ---
 
-## 10. 常见问题
+## 11. 常见问题
 
 ### 10.1 镜像拉取超时
 
@@ -271,7 +312,7 @@ Nitro 侧验证与第 7 章相同，只需保持 `KMS_URL` 不变。
 
 ---
 
-## 11. 资源回收
+## 12. 资源回收
 
 ```bash
 # GCP
