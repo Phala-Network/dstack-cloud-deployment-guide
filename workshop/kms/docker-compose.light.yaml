@@ -1,0 +1,147 @@
+# dstack-kms production auth path (Light Client / Helios)
+#
+# Usage:
+#   cp .env.example .env
+#   # fill ETH_RPC_URL / KMS_CONTRACT_ADDR / KMS_DOMAIN
+#   cp docker-compose.light.yaml docker-compose.yaml
+#   docker compose up -d
+
+services:
+  helios:
+    image: rust:1.84-bookworm
+    restart: unless-stopped
+    ports:
+      - "${HELIOS_RPC_PORT:-18545}:8545"
+    environment:
+      - HELIOS_CONSENSUS_RPC=${HELIOS_CONSENSUS_RPC:-https://base-sepolia.operationsolarstorm.org}
+      - HELIOS_EXECUTION_RPC=${HELIOS_EXECUTION_RPC:-https://sepolia.base.org}
+      - HELIOS_ETH_CHECKPOINT=${HELIOS_ETH_CHECKPOINT:-}
+    volumes:
+      - helios-state:/state
+    command:
+      - bash
+      - -lc
+      - |
+        set -euo pipefail
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -y >/dev/null
+        apt-get install -y --no-install-recommends ca-certificates curl jq pkg-config libssl-dev clang >/dev/null
+        rm -rf /var/lib/apt/lists/*
+
+        if [ ! -x /state/helios/bin/helios ]; then
+          cargo install --locked --git https://github.com/a16z/helios --bin helios --root /state/helios
+        fi
+
+        ETH_CHECKPOINT="$${HELIOS_ETH_CHECKPOINT}"
+        if [ -z "$${ETH_CHECKPOINT}" ]; then
+          ETH_CHECKPOINT=$(curl -fsSL https://ethereum-sepolia-beacon-api.publicnode.com/eth/v1/beacon/states/finalized/root | jq -r '.data.root')
+        fi
+
+        exec /state/helios/bin/helios opstack \
+          --network base-sepolia \
+          --rpc-bind-ip 0.0.0.0 \
+          --rpc-port 8545 \
+          --consensus-rpc "$${HELIOS_CONSENSUS_RPC}" \
+          --execution-rpc "$${HELIOS_EXECUTION_RPC}" \
+          --ethereum-checkpoint "$${ETH_CHECKPOINT}"
+
+  auth-api:
+    image: node:20-bookworm-slim
+    restart: unless-stopped
+    depends_on:
+      - helios
+    ports:
+      - "${AUTH_HTTP_PORT:-18000}:8000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - ETH_RPC_URL=http://helios:8545
+      - KMS_CONTRACT_ADDR=${KMS_CONTRACT_ADDR:?set KMS_CONTRACT_ADDR in .env}
+      - DSTACK_REPO=${DSTACK_REPO:-https://github.com/Phala-Network/dstack-cloud.git}
+      - DSTACK_REF=${DSTACK_REF:-master}
+    volumes:
+      - auth-state:/state
+    command:
+      - bash
+      - -lc
+      - |
+        set -euo pipefail
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -y >/dev/null
+        apt-get install -y --no-install-recommends git python3 make g++ ca-certificates >/dev/null
+        rm -rf /var/lib/apt/lists/*
+
+        if [ ! -d /state/auth-eth ]; then
+          git clone "$${DSTACK_REPO}" /state/dstack
+          cd /state/dstack
+          git checkout "$${DSTACK_REF}"
+          cp -a kms/auth-eth /state/auth-eth
+          cd /state/auth-eth
+          npm ci --silent
+          npm run build --silent
+        fi
+
+        cd /state/auth-eth
+        exec node dist/src/main.js
+
+  kms:
+    image: cr.kvin.wang/dstack-kms:nitro
+    restart: unless-stopped
+    depends_on:
+      - auth-api
+    volumes:
+      - kms-volume:/kms
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    ports:
+      - "${KMS_HTTPS_PORT:-12001}:8000"
+    environment:
+      - KMS_DOMAIN=${KMS_DOMAIN:?set KMS_DOMAIN in .env}
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        mkdir -p /kms/certs /kms/images
+        cat > /kms/kms.toml <<EOK
+        [rpc]
+        address = "0.0.0.0"
+        port = 8000
+
+        [rpc.tls]
+        key = "/kms/certs/rpc.key"
+        certs = "/kms/certs/rpc.crt"
+
+        [rpc.tls.mutual]
+        ca_certs = "/kms/certs/tmp-ca.crt"
+        mandatory = false
+
+        [core]
+        cert_dir = "/kms/certs"
+        admin_token_hash = ""
+
+        [core.image]
+        verify = true
+        cache_dir = "/kms/images"
+        download_url = "http://localhost:8000/{OS_IMAGE_HASH}.tar.gz"
+        download_timeout = "2m"
+
+        [core.auth_api]
+        type = "webhook"
+
+        [core.auth_api.webhook]
+        url = "http://auth-api:8000"
+
+        [core.onboard]
+        enabled = true
+        auto_bootstrap_domain = "$${KMS_DOMAIN}"
+        quote_enabled = true
+        address = "0.0.0.0"
+        port = 8000
+        EOK
+
+        exec dstack-kms -c /kms/kms.toml
+
+volumes:
+  kms-volume:
+  auth-state:
+  helios-state:
