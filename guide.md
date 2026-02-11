@@ -52,6 +52,12 @@ cd dstack-gcp-guide
 - `18000/tcp`：auth-api（调试，可选）
 - `18545/tcp`：helios（调试，可选，仅 light client）
 
+### 2.4 “最新版本”约定
+
+- KMS 镜像默认使用：`cr.kvin.wang/dstack-kms:latest`
+- `auth-api` 依赖源码默认使用：`DSTACK_REF=master`
+- `dstack-nitro-enclave-app` 使用 `main` 分支 + 仓库内已更新的 submodule 指针（无需手工切换子模块 commit）
+
 ---
 
 ## 3. 创建 GCP KMS 项目（TPM 模式）
@@ -91,6 +97,8 @@ export PRIVATE_KEY="<YOUR_PRIVATE_KEY>"
 printf 'y\n' | PRIVATE_KEY="$PRIVATE_KEY" RPC_URL="$RPC_URL" \
   npx hardhat kms:deploy --with-app-impl --network test
 ```
+
+> 说明：本教程不再要求手动执行 `git -C dstack checkout <commit>`。
 
 记录输出中的：
 
@@ -132,7 +140,8 @@ cp workshop/kms/.env.example workshop/kms/.env
 - `KMS_DOMAIN`
 - `ETH_RPC_URL`
 - `KMS_CONTRACT_ADDR`
-- （可选）`DSTACK_REF` 固定到可复现提交
+- `KMS_IMAGE`（默认 `cr.kvin.wang/dstack-kms:latest`）
+- （可选）`DSTACK_REF` 固定到可复现提交；不固定则默认 `master`
 
 ```bash
 # 拷贝 Direct 模板到 dstack 项目目录
@@ -274,4 +283,3 @@ dstack-cloud remove
 # AWS
 aws ec2 terminate-instances --instance-ids <INSTANCE_ID> --region <REGION>
 ```
-

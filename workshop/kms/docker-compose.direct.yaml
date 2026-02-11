@@ -45,7 +45,7 @@ services:
         exec node dist/src/main.js
 
   kms:
-    image: cr.kvin.wang/dstack-kms:nitro
+    image: ${KMS_IMAGE:-cr.kvin.wang/dstack-kms:latest}
     restart: unless-stopped
     depends_on:
       - auth-api
