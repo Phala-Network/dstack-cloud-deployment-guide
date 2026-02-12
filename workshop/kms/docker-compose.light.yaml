@@ -1,48 +1,35 @@
 # dstack-kms production auth path (Light Client / Helios)
 #
+# Requires the combined dstack-kms+helios image (see builder/).
+#
 # Usage:
 #   cp .env.example .env
-#   # fill ETH_RPC_URL / KMS_CONTRACT_ADDR / KMS_DOMAIN
+#   # fill KMS_CONTRACT_ADDR / KMS_DOMAIN
 #   cp docker-compose.light.yaml docker-compose.yaml
 #   docker compose up -d
 
 services:
   helios:
-    image: rust:1.84-bookworm
+    image: ${KMS_IMAGE:-cr.kvin.wang/dstack-kms:latest}
     restart: unless-stopped
     ports:
-      - "${HELIOS_RPC_PORT:-18545}:8545"
-    environment:
-      - HELIOS_CONSENSUS_RPC=${HELIOS_CONSENSUS_RPC:-https://base-sepolia.operationsolarstorm.org}
-      - HELIOS_EXECUTION_RPC=${HELIOS_EXECUTION_RPC:-https://sepolia.base.org}
-      - HELIOS_ETH_CHECKPOINT=${HELIOS_ETH_CHECKPOINT:-}
-    volumes:
-      - helios-state:/state
+      - "18545:8545"
     command:
-      - bash
-      - -lc
+      - sh
+      - -c
       - |
-        set -euo pipefail
-        export DEBIAN_FRONTEND=noninteractive
-        apt-get update -y >/dev/null
-        apt-get install -y --no-install-recommends ca-certificates curl jq pkg-config libssl-dev clang >/dev/null
-        rm -rf /var/lib/apt/lists/*
+        set -e
+        CONSENSUS_RPC=https://base-sepolia.operationsolarstorm.org
+        EXECUTION_RPC=https://sepolia.base.org
 
-        if [ ! -x /state/helios/bin/helios ]; then
-          cargo install --locked --git https://github.com/a16z/helios --bin helios --root /state/helios
-        fi
+        ETH_CHECKPOINT=$$(curl -fsSL https://ethereum-sepolia-beacon-api.publicnode.com/eth/v1/beacon/states/finalized/root | jq -r '.data.root')
 
-        ETH_CHECKPOINT="$${HELIOS_ETH_CHECKPOINT}"
-        if [ -z "$${ETH_CHECKPOINT}" ]; then
-          ETH_CHECKPOINT=$(curl -fsSL https://ethereum-sepolia-beacon-api.publicnode.com/eth/v1/beacon/states/finalized/root | jq -r '.data.root')
-        fi
-
-        exec /state/helios/bin/helios opstack \
+        exec helios opstack \
           --network base-sepolia \
           --rpc-bind-ip 0.0.0.0 \
           --rpc-port 8545 \
-          --consensus-rpc "$${HELIOS_CONSENSUS_RPC}" \
-          --execution-rpc "$${HELIOS_EXECUTION_RPC}" \
+          --consensus-rpc "$${CONSENSUS_RPC}" \
+          --execution-rpc "$${EXECUTION_RPC}" \
           --ethereum-checkpoint "$${ETH_CHECKPOINT}"
 
   auth-api:
@@ -144,4 +131,3 @@ services:
 volumes:
   kms-volume:
   auth-state:
-  helios-state:

@@ -231,36 +231,22 @@ Compose hash added successfully
 
 ## 5. 构建并推送 dstack-kms 镜像（可选但推荐）
 
-如果你希望使用"自己刚构建的最新镜像"，可执行以下步骤。
+本仓库 `workshop/kms/builder/` 提供了一站式构建脚本，生成的镜像同时包含 **dstack-kms** 和 **helios**（用于 Section 9 的 Light Client 模式）。
+
+源码版本已 pin 在 `build-image.sh` 中（`DSTACK_REV` / `HELIOS_REV`），可通过环境变量覆盖。
 
 ```bash
-git clone https://github.com/Phala-Network/meta-dstack-cloud.git
-cd meta-dstack-cloud
-git submodule update --init --recursive dstack
-cd dstack/kms/dstack-app/builder
+cd workshop/kms/builder
 
-# 目标镜像仓库
-export IMAGE_REPO=cr.kvin.wang/dstack-kms
+# 构建（默认使用 pinned 版本）
+./build-image.sh cr.kvin.wang/dstack-kms:latest
 
-# 使用 dstack-cloud 主仓库 master 最新提交构建
-export DSTACK_SRC_URL=https://github.com/Phala-Network/dstack-cloud.git
-export DSTACK_REV=$(git ls-remote "$DSTACK_SRC_URL" refs/heads/master | awk '{print $1}')
-
-# 确保 buildx builder 可用
-docker buildx inspect buildkit_20 >/dev/null 2>&1 || \
-  docker buildx create --use --driver-opt image=moby/buildkit:v0.20.2 --name buildkit_20
-
-docker buildx build \
-  --builder buildkit_20 \
-  --platform linux/amd64 \
-  --build-arg DSTACK_SRC_URL="$DSTACK_SRC_URL" \
-  --build-arg DSTACK_REV="$DSTACK_REV" \
-  --build-arg SOURCE_DATE_EPOCH="$(date +%s)" \
-  --push \
-  -t "${IMAGE_REPO}:latest" \
-  -t "${IMAGE_REPO}:nitro" \
-  .
+# 推送
+docker push cr.kvin.wang/dstack-kms:latest
 ```
+
+> 若只需要 Direct RPC 模式（Section 6），也可使用上游
+> `meta-dstack-cloud/dstack/kms/dstack-app/builder` 构建不含 helios 的精简镜像。
 
 ---
 
@@ -299,8 +285,6 @@ EOF
 ```
 
 替换其中的 `<KMS_CONTRACT_ADDR>` 和 `KMS_DOMAIN` 为实际值。
-
-同时确保 `app.json` 中的 `env_file` 字段不会指向已有文件（默认为 `.env`，若该文件不存在则无影响；若已存在需改为其他名称或删除）。
 
 ### 6.3 部署
 
@@ -402,33 +386,25 @@ KEY_PATH=./nitro-enclave-key.pem \
 > aws ec2 delete-key-pair --region us-east-1 --key-name nitro-enclave-key
 > ```
 
-### 7.2 已知问题：内核模块加载失败
+### 7.2 已知问题：Enclave CPU 分配器启动失败
 
-`deploy_host.sh` 会安装 `linux-modules-extra-aws`，可能导致内核版本升级。若运行的内核版本落后于新安装的模块版本，会出现：
-
-```
-modprobe: FATAL: Module nitro_enclaves not found in directory /lib/modules/6.8.0-1044-aws
-```
-
-**解决方法**：重启实例后重新运行脚本，或手动 SSH 进入实例完成剩余步骤：
+若看到 `Insufficient CPUs available in the pool` (E22)，先检查是否有残留的 enclave 占用 CPU：
 
 ```bash
-# SSH 到实例
-ssh -i ./nitro-enclave-key.pem ubuntu@<PUBLIC_IP>
+# 检查是否有残留 enclave（同一实例多次运行时常见）
+nitro-cli describe-enclaves
 
-# 确认新内核
-uname -r   # 应为新版本
-
-# 加载模块
-sudo modprobe nitro_enclaves
+# 如果输出中有 RUNNING 状态的 enclave，先终止它们
+nitro-cli terminate-enclave --all
 ```
 
-### 7.3 已知问题：Enclave CPU 分配器启动失败
-
-若看到 `Insufficient CPUs available in the pool` (E22)，需手动配置分配器：
+若终止残留 enclave 后问题仍存在，手动配置分配器：
 
 ```bash
-# 在 EC2 实例上执行
+# 查看当前实例可用 CPU 数（enclave 最多用 nproc - 1）
+nproc
+
+# 在 EC2 实例上执行（cpu_count 必须小于 nproc 输出值）
 sudo bash -c 'cat > /etc/nitro_enclaves/allocator.yaml <<YAML
 ---
 memory_mib: 512
@@ -502,27 +478,17 @@ jq 'keys' app_keys.json
 
 ## 9. 部署 KMS（生产模式：Light Client / Helios）
 
-> **⚠️ 已知问题**：当前 `docker-compose.light.yaml` 中的 helios 容器使用 `rust:1.84-bookworm` 镜像 + `cargo install --git` 方式在运行时编译 helios。在 CVM 环境中编译时间可能超过 15 分钟，且由于内存、网络等限制容易失败导致容器反复重启。
->
-> **建议**：对生产环境，请使用预构建的 helios 镜像，或在外部编译好后以 volume 方式挂入。
+> `cr.kvin.wang/dstack-kms:latest` 镜像已内置 helios 二进制（见 `workshop/kms/builder/`），
+> helios 容器直接复用 KMS 镜像，无需额外下载或编译。
+
+只需将 compose 文件替换为 light 模板，`prelaunch.sh` 与 Direct RPC 版本完全相同：
 
 ```bash
 # 使用本仓库 light 模板
 cp workshop/kms/docker-compose.light.yaml workshop-run/kms-prod/docker-compose.yaml
 ```
 
-在 `prelaunch.sh` 中补充 helios 相关环境变量：
-
-```bash
-cat >> workshop-run/kms-prod/prelaunch.sh <<'EOF'
-HELIOS_RPC_PORT=18545
-HELIOS_CONSENSUS_RPC=https://base-sepolia.operationsolarstorm.org
-HELIOS_EXECUTION_RPC=https://sepolia.base.org
-HELIOS_ETH_CHECKPOINT=
-EOF
-```
-
-> 注意：上述内容应追加到 `ENVEOF` 标记之前。完整的 `prelaunch.sh` 应包含第 6 章的所有环境变量加上 helios 变量。
+> 如需自行构建包含 helios 的 KMS 镜像，参见 `workshop/kms/builder/README.md`。
 
 ```bash
 cd workshop-run/kms-prod
@@ -534,7 +500,7 @@ dstack-cloud fw allow 18000
 dstack-cloud fw allow 18545
 ```
 
-验证（需等待 helios 编译完成，可能需要 15 分钟以上）：
+验证：
 
 ```bash
 # helios RPC
@@ -593,15 +559,10 @@ Nitro 侧验证与第 8 章相同，只需保持 `KMS_URL` 不变。
 
 **解决方法**：不要在项目目录放 `.env`，改为在 `prelaunch.sh` 中生成 `.env` 文件（参见第 6.2 节）。
 
-### 11.6 Nitro Enclave 内核模块加载失败
+### 11.6 Helios 容器启动失败
 
-`deploy_host.sh` 安装的 `linux-modules-extra-aws` 可能升级内核版本。在旧内核上运行时 `modprobe nitro_enclaves` 会失败。需重启实例后重新执行相关步骤（参见第 7.2 节）。
-
-### 11.7 Helios 容器启动缓慢或反复重启
-
-helios 使用运行时 `cargo install` 编译，在资源受限的 CVM 环境中可能需 15 分钟以上或直接失败。建议：
-- 观察串口日志确认是否仍在编译
-- 使用预构建 helios 二进制或 Docker 镜像
+- helios 已内置在 KMS 镜像中。如果启动报 `network not recognized`，说明镜像中的 helios 版本不支持当前网络，需要使用 `workshop/kms/builder/` 重新构建镜像。
+- 检查 `consensus-rpc` / `execution-rpc` 端点是否可访问。
 
 ---
 
