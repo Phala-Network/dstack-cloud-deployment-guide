@@ -1,6 +1,6 @@
 # 在 GCP 部署 dstack-kms，并为 AWS Nitro Enclave 提供密钥
 
-> 更新日期：2026-02-11
+> 更新日期：2026-02-12
 >
 > 本文提供一条可复现的公开流程：
 > 1) 在 GCP TDX CVM 部署 dstack-kms；2) 完成链上授权；3) 由 Nitro Enclave 通过 RA-TLS 调用 KMS 获取密钥。
@@ -519,7 +519,119 @@ Nitro 侧验证与第 8 章相同，只需保持 `KMS_URL` 不变。
 
 ---
 
-## 10. 生产安全建议
+## 10. KMS Onboard（交互式 Bootstrap 与多节点密钥复制）
+
+### 10.1 背景
+
+前面第 6、9 章使用的 compose 模板中，`kms.toml` 设置了 `auto_bootstrap_domain = "${KMS_DOMAIN}"`。
+这意味着 KMS 首次启动时**自动生成密钥**并跳过交互，简单直接。
+
+但 `auto_bootstrap_domain` 有一个限制：它**不会保存 `bootstrap-info.json`**（包含 TDX attestation quote），因此 `GetMeta` 返回的 `bootstrap_info` 为 `null`。
+
+**交互式 Onboard** 提供两个额外能力：
+
+1. **Bootstrap**：手动触发密钥生成，返回 `ca_pubkey`、`k256_pubkey` 和 TDX `attestation`（可用于链上验证 KMS 完整性）
+2. **Onboard**：从已运行的 KMS 实例复制密钥到新实例，实现多节点共享身份（高可用 / 灾备）
+
+### 10.2 交互式 Bootstrap
+
+使用本仓库提供的 `docker-compose.onboard.yaml`（与 direct 模板唯一区别：`auto_bootstrap_domain = ""`）：
+
+```bash
+cp workshop/kms/docker-compose.onboard.yaml workshop-run/kms-prod/docker-compose.yaml
+
+cd workshop-run/kms-prod
+dstack-cloud deploy --delete
+```
+
+部署后，KMS 在端口 12001 上启动 **HTTP**（非 HTTPS）Onboard 服务：
+
+- 浏览器访问 `http://<KMS_DOMAIN>:12001/` 可看到交互式 UI
+- 也可用 curl 直接调用 RPC
+
+**调用 Bootstrap：**
+
+```bash
+curl -s "http://<KMS_DOMAIN>:12001/prpc/Onboard.Bootstrap?json" \
+  -d '{"domain": "<KMS_DOMAIN>"}' | jq .
+```
+
+```json
+{
+  "ca_pubkey": "3059301306072a8648ce3d0201...",
+  "k256_pubkey": "03548465f50fca3aec29ec1569...",
+  "attestation": "0001017d040002008100..."
+}
+```
+
+> `attestation` 是 TDX quote（因 `quote_enabled = true`），包含密钥指纹，可在链上或链下验证 KMS 运行在可信环境中。
+
+**完成初始化：**
+
+```bash
+curl "http://<KMS_DOMAIN>:12001/finish"
+# 返回 "OK"
+```
+
+`/finish` 使 Onboard 服务 exit(0)，docker-compose `restart: unless-stopped` 自动重启容器。
+此时密钥已写入持久卷，KMS 检测到密钥存在，跳过 Onboard，直接以 **HTTPS** 启动主服务。
+
+**验证：**
+
+```bash
+# 等待约 10 秒重启完成，此时为 HTTPS
+curl -sk "https://<KMS_DOMAIN>:12001/prpc/GetMeta?json" -d '{}' | jq .bootstrap_info
+```
+
+应返回非 `null` 的 `bootstrap_info`，包含与 Bootstrap 时相同的 `ca_pubkey`、`k256_pubkey` 和 `attestation`。
+
+### 10.3 Onboard 从已有 KMS（多节点密钥复制）
+
+> 此场景需要两个 GCP TDX 实例同时运行，且源 KMS 已完成 Bootstrap。
+
+假设已有一个运行中的 KMS（源）地址为 `https://source-kms.example.com:12001`。
+
+1. 部署第二个 KMS 实例，同样使用 `docker-compose.onboard.yaml`
+2. 调用 Onboard RPC，指定源 KMS URL 和新实例域名：
+
+```bash
+curl -s "http://<NEW_KMS_DOMAIN>:12001/prpc/Onboard.Onboard?json" \
+  -d '{
+    "source_url": "https://source-kms.example.com:12001/prpc",
+    "domain": "<NEW_KMS_DOMAIN>"
+  }' | jq .
+```
+
+```json
+{}
+```
+
+> 空对象 `{}` 表示成功。新 KMS 已从源 KMS 获取 `ca_key`、`k256_key`、`tmp_ca_key`，并生成了自己的 RPC 证书。
+
+3. 完成初始化：
+
+```bash
+curl "http://<NEW_KMS_DOMAIN>:12001/finish"
+```
+
+4. 验证两个 KMS 共享相同身份：
+
+```bash
+# 源 KMS
+curl -sk "https://source-kms.example.com:12001/prpc/GetMeta?json" -d '{}' | jq .k256_pubkey
+
+# 新 KMS
+curl -sk "https://<NEW_KMS_DOMAIN>:12001/prpc/GetMeta?json" -d '{}' | jq .k256_pubkey
+```
+
+两者的 `k256_pubkey` 和 `ca_cert` 应完全一致。
+
+> **注意**：Onboard 过程中，新 KMS 需要通过 RA-TLS 连接源 KMS（`quote_enabled = true`），
+> 因此两个实例都必须运行在支持 TDX attestation 的 dstack 环境中。
+
+---
+
+## 11. 生产安全建议
 
 1. 不要在生产长期使用 `ZERO32`。
 2. 不要在生产长期使用 `--allow-any-device`。
@@ -529,27 +641,27 @@ Nitro 侧验证与第 8 章相同，只需保持 `KMS_URL` 不变。
 
 ---
 
-## 11. 常见问题
+## 12. 常见问题
 
-### 11.1 镜像拉取超时
+### 12.1 镜像拉取超时
 
 表现：串口日志出现 `i/o timeout`。
 处理：重试部署，必要时更换镜像源或网络出口。
 
-### 11.2 `deploy --delete` 卡在停止阶段
+### 12.2 `deploy --delete` 卡在停止阶段
 
 可在云侧确认实例状态后，再执行重试。
 
-### 11.3 端口曾可用、重建实例后不通
+### 12.3 端口曾可用、重建实例后不通
 
 在新版 `dstack-cloud` 中已修复"实例重建后防火墙 tag 未自动附加"的问题。
 若你使用旧版本，请升级后重试。
 
-### 11.4 合约部署报 "no code at address"
+### 12.4 合约部署报 "no code at address"
 
 公共 RPC 上的读取延迟导致。合约通常已成功部署，可通过 [Base Sepolia 区块浏览器](https://sepolia.basescan.org) 确认。
 
-### 11.5 `.env` 文件与 `dstack-cloud` 冲突
+### 12.5 `.env` 文件与 `dstack-cloud` 冲突
 
 `dstack-cloud` 会将项目目录中的 `.env` 当作需要加密的密钥文件（仅 `--key-provider kms` 模式支持）。在 TPM 模式下使用 `.env` 会报错：
 
@@ -559,14 +671,14 @@ Nitro 侧验证与第 8 章相同，只需保持 `KMS_URL` 不变。
 
 **解决方法**：不要在项目目录放 `.env`，改为在 `prelaunch.sh` 中生成 `.env` 文件（参见第 6.2 节）。
 
-### 11.6 Helios 容器启动失败
+### 12.6 Helios 容器启动失败
 
 - helios 已内置在 KMS 镜像中。如果启动报 `network not recognized`，说明镜像中的 helios 版本不支持当前网络，需要使用 `workshop/kms/builder/` 重新构建镜像。
 - 检查 `consensus-rpc` / `execution-rpc` 端点是否可访问。
 
 ---
 
-## 12. 资源回收
+## 13. 资源回收
 
 ```bash
 # GCP
