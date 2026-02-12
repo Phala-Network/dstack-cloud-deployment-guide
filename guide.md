@@ -541,8 +541,13 @@ Nitro 侧验证与第 8 章相同，只需保持 `KMS_URL` 不变。
 cp workshop/kms/docker-compose.onboard.yaml workshop-run/kms-prod/docker-compose.yaml
 
 cd workshop-run/kms-prod
-dstack-cloud deploy --delete
+dstack-cloud remove        # 删除实例及持久数据盘（清除旧密钥）
+dstack-cloud deploy        # 全新部署
 ```
+
+> **重要**：`deploy --delete` 仅重建 VM，但持久数据盘上的 Docker volumes（含已生成的密钥）会保留。
+> 如果之前已用 direct/light 模板部署过，KMS 会检测到已有密钥而跳过 Onboard。
+> 必须先 `dstack-cloud remove` 彻底删除数据盘，再 `dstack-cloud deploy` 全新部署。
 
 部署后，KMS 在端口 12001 上启动 **HTTP**（非 HTTPS）Onboard 服务：
 
