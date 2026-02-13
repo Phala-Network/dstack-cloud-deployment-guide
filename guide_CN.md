@@ -248,7 +248,7 @@ KMS_IMAGE=cr.kvin.wang/dstack-kms:latest
 ETH_RPC_URL=https://sepolia.base.org
 KMS_CONTRACT_ADDR=<KMS_CONTRACT_ADDR>
 DSTACK_REPO=https://github.com/Phala-Network/dstack-cloud.git
-DSTACK_REF=ecbc9e0493015dba41eb0bdf55c7e12fa0a04267
+DSTACK_REF=6054b84d54c943ff76c975fde8fa478dfc09968c
 ENVEOF
 EOF
 ```
