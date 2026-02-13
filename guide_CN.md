@@ -76,8 +76,8 @@ dstack-cloud pull https://github.com/Phala-Network/meta-dstack-cloud/releases/do
 ### 2.5 clone本教程代码仓库
 
 ```bash
-git clone https://github.com/kvinwang/dstack-gcp-guide.git
-cd dstack-gcp-guide
+git clone https://github.com/kvinwang/dstack-cloud-deployment-guide.git
+cd dstack-cloud-deployment-guide
 ```
 
 ### 2.6 域名与端口
@@ -229,7 +229,7 @@ docker push cr.kvin.wang/dstack-kms:latest
 将本仓库提供的 compose 模板拷贝到 `dstack-cloud new` 生成的项目目录：
 
 ```bash
-# 假设当前目录为 dstack-gcp-guide，项目目录为 workshop-run/kms-prod
+# 假设当前目录为 dstack-cloud-deployment-guide，项目目录为 workshop-run/kms-prod
 cp workshop/kms/docker-compose.direct.yaml workshop-run/kms-prod/docker-compose.yaml
 ```
 
