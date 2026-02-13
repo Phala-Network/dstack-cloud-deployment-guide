@@ -73,7 +73,7 @@ dstack-cloud pull https://github.com/Phala-Network/meta-dstack-cloud/releases/do
 
 > 当前为测试版本（v0.6.0-test），尚未提供 reproducible build 脚本。
 
-### 2.5 代码仓库
+### 2.5 clone本教程代码仓库
 
 ```bash
 git clone https://github.com/kvinwang/dstack-gcp-guide.git
@@ -82,18 +82,18 @@ cd dstack-gcp-guide
 
 ### 2.6 域名与端口
 
-建议准备一个域名（示例：`gcp-kms.example.com`），解析到 KMS 公网地址。
+建议准备一个域名（示例：`test-kms.kvin.wang`），解析到 KMS GCP instance公网地址。
 
 开放端口：
 
-- `12001/tcp`：KMS HTTPS
-- `18000/tcp`：auth-api（调试，可选）
-- `18545/tcp`：helios（调试，可选，仅 light client）
+- `12001/tcp`：KMS API
+- `18000/tcp`：internal auth-api（调试，可选）
+- `18545/tcp`：internal helios eth RPC（调试，可选，仅 light client）
 
 ### 2.7 "最新版本"约定
 
 - KMS 镜像默认使用：`cr.kvin.wang/dstack-kms:latest`
-- `auth-api` 依赖源码默认使用：`DSTACK_REF=master`
+- `auth-api` 依赖源码 pin 到：`DSTACK_REF=fc6a43fe`（[dstack-cloud master](https://github.com/Phala-Network/dstack-cloud/commit/fc6a43fe)）
 - `dstack-nitro-enclave-app` 使用 `main` 分支 + 仓库内已更新的 submodule 指针（无需手工切换子模块 commit）
 
 ---
@@ -168,8 +168,6 @@ export PRIVATE_KEY="<YOUR_PRIVATE_KEY>"
 echo "y" | npx hardhat kms:deploy --with-app-impl --network custom
 ```
 
-> **重要**：需要先 `export` 环境变量，再通过管道传入 `y` 确认。不要将 `PRIVATE_KEY=xxx` 写在 `echo` 之前，否则管道会导致后续命令丢失环境变量。
-
 示例输出：
 
 ```
@@ -188,24 +186,13 @@ DstackKms Proxy deployed to: 0xFaAD...4DBC
 > **已知问题**：在公共 RPC 上部署时，脚本可能报 `Contract deployment failed - no code at address` 错误。
 > 这通常是 RPC 读取延迟导致的竞态条件，合约实际已成功部署。可通过区块浏览器确认合约地址是否有代码。
 
-### 4.3 配置授权（最小闭环）
+### 4.3 创建应用
 
 ```bash
 export KMS_CONTRACT_ADDRESS="<KMS_CONTRACT_ADDR>"
-ZERO32=0x0000000000000000000000000000000000000000000000000000000000000000
 
-# 1) 允许 OS image hash（演示用 ZERO32，生产请替换为真实 hash）
-npx hardhat kms:add-image --network custom "$ZERO32"
-```
-
-```
-Waiting for transaction 0xf5c5...a866 to be confirmed...
-Image added successfully
-```
-
-```bash
-# 2) 创建应用（演示可用 allow-any-device，生产请收紧）
-npx hardhat kms:create-app --network custom --allow-any-device --hash "$ZERO32"
+# 创建应用（演示可用 allow-any-device，生产请收紧）
+npx hardhat kms:create-app --network custom --allow-any-device
 ```
 
 ```
@@ -215,21 +202,14 @@ Owner: 0xe359...EfB5
 ```
 
 ```bash
-# 3) 允许 compose hash
 export APP_ID="<APP_ID_FROM_CREATE_APP>"
-npx hardhat app:add-hash --network custom --app-id "$APP_ID" "$ZERO32"
-```
-
-```
-Waiting for transaction 0xd059...fefd to be confirmed...
-Compose hash added successfully
 ```
 
 > 在此期间，`RPC_URL`、`PRIVATE_KEY`、`KMS_CONTRACT_ADDRESS` 环境变量需保持有效。
 
 ---
 
-## 5. 构建并推送 dstack-kms 镜像（可选但推荐）
+## 5. 构建并推送 dstack-kms 镜像（可选）
 
 本仓库 `workshop/kms/builder/` 提供了一站式构建脚本，生成的镜像同时包含 **dstack-kms** 和 **helios**（用于 Section 9 的 Light Client 模式）。
 
@@ -239,14 +219,12 @@ Compose hash added successfully
 cd workshop/kms/builder
 
 # 构建（默认使用 pinned 版本）
+# cr.kvin.wang 可替换为其他镜像仓库
 ./build-image.sh cr.kvin.wang/dstack-kms:latest
 
 # 推送
 docker push cr.kvin.wang/dstack-kms:latest
 ```
-
-> 若只需要 Direct RPC 模式（Section 6），也可使用上游
-> `meta-dstack-cloud/dstack/kms/dstack-app/builder` 构建不含 helios 的精简镜像。
 
 ---
 
@@ -261,8 +239,6 @@ docker push cr.kvin.wang/dstack-kms:latest
 cp workshop/kms/docker-compose.direct.yaml workshop-run/kms-prod/docker-compose.yaml
 ```
 
-> **注意**：不要将 `.env` 文件直接放在项目目录中。`dstack-cloud` 会将项目根目录的 `.env` 当作"需要 KMS 加密的密钥文件"处理，在 TPM 模式下会报错。
-
 ### 6.2 通过 prelaunch.sh 注入环境变量
 
 编辑项目目录中的 `prelaunch.sh`，写入 docker-compose 所需的环境变量：
@@ -272,19 +248,18 @@ cat > workshop-run/kms-prod/prelaunch.sh <<'EOF'
 #!/bin/sh
 # Prelaunch script - write .env for docker-compose
 cat > .env <<'ENVEOF'
-KMS_DOMAIN=gcp-kms.example.com
 KMS_HTTPS_PORT=12001
 AUTH_HTTP_PORT=18000
 KMS_IMAGE=cr.kvin.wang/dstack-kms:latest
 ETH_RPC_URL=https://sepolia.base.org
 KMS_CONTRACT_ADDR=<KMS_CONTRACT_ADDR>
 DSTACK_REPO=https://github.com/Phala-Network/dstack-cloud.git
-DSTACK_REF=master
+DSTACK_REF=fc6a43fe
 ENVEOF
 EOF
 ```
 
-替换其中的 `<KMS_CONTRACT_ADDR>` 和 `KMS_DOMAIN` 为实际值。
+替换其中的 `<KMS_CONTRACT_ADDR>` 为实际值。
 
 ### 6.3 部署
 
@@ -314,10 +289,7 @@ dstack-cloud fw allow 18000
 
 部署完成后将域名解析到输出中的 External IP。
 
-> 是否绑定静态 IP：**非必须**。
-> 如果你需要长期稳定域名，建议绑定静态公网 IP；临时测试可直接使用实例当前公网 IP。
-
-### 6.4 验证
+### 6.4 Bootstrap（交互式初始化）
 
 容器启动约需 1-2 分钟（拉取镜像 + auth-api 编译）。可通过串口日志观察进度：
 
@@ -325,7 +297,36 @@ dstack-cloud fw allow 18000
 dstack-cloud logs
 ```
 
-看到 `Reached target Multi-User System` 表示容器已全部启动。
+首次启动时，KMS 在端口 12001 上启动 **HTTP**（非 HTTPS）Onboard 服务。浏览器访问 `http://<KMS_DOMAIN>:12001/` 可看到交互式 UI，页面会自动显示 **Attestation Info**（device_id、mr_aggregated、os_image_hash），这些是链上注册所需的真实值。
+
+**调用 Bootstrap 生成密钥：**
+
+```bash
+curl -s "http://<KMS_DOMAIN>:12001/prpc/Onboard.Bootstrap?json" \
+  -d '{"domain": "<KMS_DOMAIN>"}' | jq .
+```
+
+```json
+{
+  "ca_pubkey": "3059301306072a8648ce3d0201...",
+  "k256_pubkey": "03548465f50fca3aec29ec1569...",
+  "attestation": "0001017d040002008100..."
+}
+```
+
+> `attestation` 是 TDX quote（因 `quote_enabled = true`），包含密钥指纹，可在链上或链下验证 KMS 运行在可信环境中。
+
+**完成初始化：**
+
+```bash
+curl "http://<KMS_DOMAIN>:12001/finish"
+# 返回 "OK"
+```
+
+`/finish` 使 Onboard 服务 exit(0)，docker-compose `restart: unless-stopped` 自动重启容器。
+此时密钥已写入持久卷，KMS 检测到密钥存在，跳过 Onboard，直接以 **HTTPS** 启动主服务。
+
+### 6.5 验证
 
 验证 auth-api：
 
@@ -344,7 +345,7 @@ curl -s "http://<KMS_DOMAIN>:18000/" | jq .
 }
 ```
 
-验证 KMS：
+验证 KMS（注意此时为 HTTPS）：
 
 ```bash
 curl -sk "https://<KMS_DOMAIN>:12001/prpc/GetMeta?json" -d '{}' | jq .
@@ -355,12 +356,19 @@ curl -sk "https://<KMS_DOMAIN>:12001/prpc/GetMeta?json" -d '{}' | jq .
   "ca_cert": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n",
   "allow_any_upgrade": false,
   "k256_pubkey": "02...",
+  "bootstrap_info": {
+    "ca_pubkey": "3059...",
+    "k256_pubkey": "03...",
+    "attestation": "0001..."
+  },
   "is_dev": false,
   "kms_contract_address": "0xFaAD...4DBC",
   "chain_id": 84532,
   "app_auth_implementation": "0x43ac...A578"
 }
 ```
+
+> `bootstrap_info` 包含 Bootstrap 时返回的 `ca_pubkey`、`k256_pubkey` 和 TDX `attestation`。
 
 ---
 
@@ -376,14 +384,14 @@ cd dstack-nitro-enclave-app
 # 可按需覆盖变量：REGION / INSTANCE_TYPE / KEY_NAME / KEY_PATH 等
 REGION=us-east-1 \
 INSTANCE_TYPE=c5.xlarge \
-KEY_NAME=nitro-enclave-key \
-KEY_PATH=./nitro-enclave-key.pem \
+KEY_NAME=dstack-nitro-enclave-key \
+KEY_PATH=./dstack-nitro-enclave-key.pem \
 ./deploy_host.sh
 ```
 
-> **注意**：如果 AWS 中已存在同名 Key Pair（`nitro-enclave-key`）但本地没有对应的 PEM 文件，脚本会报错退出。此时需先删除 AWS 上的旧密钥对：
+> **注意**：如果 AWS 中已存在同名 Key Pair（`dstack-nitro-enclave-key`）但本地没有对应的 PEM 文件，脚本会报错退出。此时需先删除 AWS 上的旧密钥对：
 > ```bash
-> aws ec2 delete-key-pair --region us-east-1 --key-name nitro-enclave-key
+> aws ec2 delete-key-pair --region us-east-1 --key-name dstack-nitro-enclave-key
 > ```
 
 ### 7.2 已知问题：Enclave CPU 分配器启动失败
@@ -416,7 +424,7 @@ sudo bash -c 'sync; echo 3 > /proc/sys/vm/drop_caches; echo 1 > /proc/sys/vm/com
 sudo systemctl restart nitro-enclaves-allocator.service
 ```
 
-脚本全部完成后会生成 `deployment.json`：
+`./deploy_host.sh`脚本全部完成后会生成 `deployment.json`：
 
 ```json
 {
@@ -431,13 +439,45 @@ sudo systemctl restart nitro-enclaves-allocator.service
 
 > 前提：本地需要 Rust 工具链（含 musl target），因为 `get_keys.sh` 会从源码编译 `dstack-util`。
 
+### 8.1 注册 Enclave OS Image Hash
+
+`get_keys.sh` 会先构建 EIF 镜像，输出中可以看到 PCR 值。**首次运行前**，需要先跑一遍获取 PCR，然后计算 `sha256(pcr0 || pcr1 || pcr2)` 并注册到链上。
+
+> 也可以先单独构建 EIF 来获取 PCR（无需 EC2）：在 `get-keys/` 目录下执行 `docker build`，然后 `nitro-cli build-enclave`。但最简单的方式是先跑一次 `get_keys.sh`，从输出中提取 PCR 值。
+
+计算 OS image hash：
+
+```bash
+# 将 EIF 构建输出中的 PCR0/PCR1/PCR2 替换到下方
+PCR0="<PCR0_HEX>"
+PCR1="<PCR1_HEX>"
+PCR2="<PCR2_HEX>"
+
+OS_IMAGE_HASH=$(echo -n "${PCR0}${PCR1}${PCR2}" | xxd -r -p | sha256sum | awk '{print "0x"$1}')
+echo "OS_IMAGE_HASH=${OS_IMAGE_HASH}"
+```
+
+注册到链上（在 `dstack-nitro-enclave-app/dstack/kms/auth-eth` 目录下执行）：
+
+```bash
+# 注册 OS image hash 到 KMS 合约
+npx hardhat kms:add-image ${OS_IMAGE_HASH} --network custom
+
+# 注册 compose hash 到 APP 合约（hash 值与 OS image hash 相同）
+npx hardhat app:add-hash --app-id ${APP_ID} ${OS_IMAGE_HASH} --network custom
+```
+
+> **注意**：`APP_ID` 会被烘焙进 EIF 镜像（通过 `enclave_run_get_keys.sh`）。不同的 `APP_ID` 会产生不同的 `PCR2`，因此需要重新计算和注册。
+
+### 8.2 拉取密钥
+
 ```bash
 cd dstack-nitro-enclave-app
 
 HOST=$(jq -r .public_ip deployment.json) \
 KMS_URL="https://<KMS_DOMAIN>:12001" \
 APP_ID="<APP_ID>" \
-KEY_PATH=./nitro-enclave-key.pem \
+KEY_PATH=./dstack-nitro-enclave-key.pem \
 ./get_keys.sh
 ```
 
@@ -447,7 +487,7 @@ KEY_PATH=./nitro-enclave-key.pem \
 [local] Building dstack-util (musl)...
 [local] Built .../dstack/target/x86_64-unknown-linux-musl/release/dstack-util
 [local] Uploading dstack-util and get-keys scripts to host...
-[remote] Starting tinyproxy and vsock proxy bridge...
+[remote] Starting forward proxy (squid) and vsock proxy bridge...
 ...
 [enclave] run dstack-util get-keys
 [enclave] dstack-util exit=0
@@ -478,10 +518,9 @@ jq 'keys' app_keys.json
 
 ## 9. 部署 KMS（生产模式：Light Client / Helios）
 
-> `cr.kvin.wang/dstack-kms:latest` 镜像已内置 helios 二进制（见 `workshop/kms/builder/`），
-> helios 容器直接复用 KMS 镜像，无需额外下载或编译。
+> `cr.kvin.wang/dstack-kms:latest` 镜像已内置 helios 二进制（见 `workshop/kms/builder/`）。
 
-只需将 compose 文件替换为 light 模板，`prelaunch.sh` 与 Direct RPC 版本完全相同：
+只需将 compose 文件替换为 light 模板。`prelaunch.sh` 与 Direct RPC 版本相同（无需 `ETH_RPC_URL`，因为 auth-api 使用 helios 本地 RPC）：
 
 ```bash
 # 使用本仓库 light 模板
@@ -500,6 +539,8 @@ dstack-cloud fw allow 18000
 dstack-cloud fw allow 18545
 ```
 
+Bootstrap 流程与第 6.4 节相同：等待容器启动后，调用 `Onboard.Bootstrap` + `/finish`。
+
 验证：
 
 ```bash
@@ -511,7 +552,7 @@ curl -s -H 'Content-Type: application/json' \
 # auth-api
 curl -s "http://<KMS_DOMAIN>:18000/" | jq .
 
-# kms
+# kms（HTTPS，Bootstrap 完成后）
 curl -sk "https://<KMS_DOMAIN>:12001/prpc/GetMeta?json" -d '{}' | jq .
 ```
 
@@ -519,85 +560,56 @@ Nitro 侧验证与第 8 章相同，只需保持 `KMS_URL` 不变。
 
 ---
 
-## 10. KMS Onboard（交互式 Bootstrap 与多节点密钥复制）
+## 10. KMS Onboard（多节点密钥复制）
 
-### 10.1 背景
+> 此场景需要两个 GCP TDX 实例同时运行，且源 KMS 已完成 Bootstrap（第 6.4 节）。
 
-前面第 6、9 章使用的 compose 模板中，`kms.toml` 设置了 `auto_bootstrap_domain = "${KMS_DOMAIN}"`。
-这意味着 KMS 首次启动时**自动生成密钥**并跳过交互，简单直接。
+Onboard 允许新 KMS 实例从已运行的源 KMS 复制密钥，实现多节点共享身份（高可用 / 灾备）。
 
-但 `auto_bootstrap_domain` 有一个限制：它**不会保存 `bootstrap-info.json`**（包含 TDX attestation quote），因此 `GetMeta` 返回的 `bootstrap_info` 为 `null`。
+### 10.1 链上授权
 
-**交互式 Onboard** 提供两个额外能力：
+Onboard 过程中，新 KMS 通过 RA-TLS 向源 KMS 请求密钥。源 KMS 的 auth-api 会验证新 KMS 的 TDX attestation quote，并调用链上合约的 `isKmsAllowed()` 检查：
 
-1. **Bootstrap**：手动触发密钥生成，返回 `ca_pubkey`、`k256_pubkey` 和 TDX `attestation`（可用于链上验证 KMS 完整性）
-2. **Onboard**：从已运行的 KMS 实例复制密钥到新实例，实现多节点共享身份（高可用 / 灾备）
+- **OS image hash**：需通过 `npx hardhat kms:add-image` 注册
+- **Aggregated MR**：需通过 `npx hardhat kms:add` 注册
+- **Device ID**：需通过 `npx hardhat kms:add-device` 注册
 
-### 10.2 交互式 Bootstrap
+> **注意**：`isKmsAllowed()` 对每个字段做精确匹配，不存在通配符。必须注册真实值。
 
-使用本仓库提供的 `docker-compose.onboard.yaml`（与 direct 模板唯一区别：`auto_bootstrap_domain = ""`）：
+### 10.2 获取真实的 Attestation 值
 
-```bash
-cp workshop/kms/docker-compose.onboard.yaml workshop-run/kms-prod/docker-compose.yaml
-
-cd workshop-run/kms-prod
-dstack-cloud remove        # 删除实例及持久数据盘（清除旧密钥）
-dstack-cloud deploy        # 全新部署
-```
-
-> **重要**：`deploy --delete` 仅重建 VM，但持久数据盘上的 Docker volumes（含已生成的密钥）会保留。
-> 如果之前已用 direct/light 模板部署过，KMS 会检测到已有密钥而跳过 Onboard。
-> 必须先 `dstack-cloud remove` 彻底删除数据盘，再 `dstack-cloud deploy` 全新部署。
-
-部署后，KMS 在端口 12001 上启动 **HTTP**（非 HTTPS）Onboard 服务：
-
-- 浏览器访问 `http://<KMS_DOMAIN>:12001/` 可看到交互式 UI
-- 也可用 curl 直接调用 RPC
-
-**调用 Bootstrap：**
+在新 KMS 处于 Onboard 模式（HTTP）时，打开 `http://<NEW_KMS_DOMAIN>:12001/` 页面即可看到 Attestation Info，或者用 RPC 获取：
 
 ```bash
-curl -s "http://<KMS_DOMAIN>:12001/prpc/Onboard.Bootstrap?json" \
-  -d '{"domain": "<KMS_DOMAIN>"}' | jq .
+curl -s "http://<NEW_KMS_DOMAIN>:12001/prpc/Onboard.GetAttestationInfo?json" | jq .
 ```
 
 ```json
 {
-  "ca_pubkey": "3059301306072a8648ce3d0201...",
-  "k256_pubkey": "03548465f50fca3aec29ec1569...",
-  "attestation": "0001017d040002008100..."
+  "device_id": "7c05db197ea451c8...",
+  "mr_aggregated": "77eea120a230044f...",
+  "os_image_hash": "182e89740db72378...",
+  "attestation_mode": "dstack-gcp-tdx"
 }
 ```
 
-> `attestation` 是 TDX quote（因 `quote_enabled = true`），包含密钥指纹，可在链上或链下验证 KMS 运行在可信环境中。
+> **重要**：串口日志（`dstack-util show`）中显示的 `device_id` 是假值 `e3b0c442...`（`SHA256("")`），不能用于链上注册。必须从 `GetAttestationInfo` RPC 或 Web UI 获取真实值。
 
-**完成初始化：**
-
-```bash
-curl "http://<KMS_DOMAIN>:12001/finish"
-# 返回 "OK"
-```
-
-`/finish` 使 Onboard 服务 exit(0)，docker-compose `restart: unless-stopped` 自动重启容器。
-此时密钥已写入持久卷，KMS 检测到密钥存在，跳过 Onboard，直接以 **HTTPS** 启动主服务。
-
-**验证：**
+用获取到的真实值注册链上授权：
 
 ```bash
-# 等待约 10 秒重启完成，此时为 HTTPS
-curl -sk "https://<KMS_DOMAIN>:12001/prpc/GetMeta?json" -d '{}' | jq .bootstrap_info
+# 注册 KMS 专用的链上授权（在 auth-eth 目录下执行）
+npx hardhat kms:add-image 0x<OS_IMAGE_HASH> --network custom
+npx hardhat kms:add 0x<MR_AGGREGATED> --network custom
+npx hardhat kms:add-device 0x<DEVICE_ID> --network custom
 ```
 
-应返回非 `null` 的 `bootstrap_info`，包含与 Bootstrap 时相同的 `ca_pubkey`、`k256_pubkey` 和 `attestation`。
-
-### 10.3 Onboard 从已有 KMS（多节点密钥复制）
-
-> 此场景需要两个 GCP TDX 实例同时运行，且源 KMS 已完成 Bootstrap。
+### 10.3 执行 Onboard
 
 假设已有一个运行中的 KMS（源）地址为 `https://source-kms.example.com:12001`。
 
-1. 部署第二个 KMS 实例，同样使用 `docker-compose.onboard.yaml`
-2. 调用 Onboard RPC，指定源 KMS URL 和新实例域名：
+1. 部署第二个 KMS 实例（使用 `docker-compose.direct.yaml` 或 `docker-compose.light.yaml`，两者均使用交互式 Bootstrap）
+2. 不要调用 Bootstrap，而是调用 Onboard RPC，指定源 KMS URL 和新实例域名：
 
 ```bash
 curl -s "http://<NEW_KMS_DOMAIN>:12001/prpc/Onboard.Onboard?json" \
@@ -629,61 +641,17 @@ curl -sk "https://source-kms.example.com:12001/prpc/GetMeta?json" -d '{}' | jq .
 curl -sk "https://<NEW_KMS_DOMAIN>:12001/prpc/GetMeta?json" -d '{}' | jq .k256_pubkey
 ```
 
-两者的 `k256_pubkey` 和 `ca_cert` 应完全一致。
+两者的 `k256_pubkey` 应完全一致（共享同一身份）。`ca_cert` 不同是正常的——每个实例生成自己的 RPC 证书。
 
-> **注意**：Onboard 过程中，新 KMS 需要通过 RA-TLS 连接源 KMS（`quote_enabled = true`），
-> 因此两个实例都必须运行在支持 TDX attestation 的 dstack 环境中。
+> **注意**：
+> - Onboard 过程中，新 KMS 通过 RA-TLS 连接源 KMS（`quote_enabled = true`），两个实例都必须运行在支持 TDX attestation 的 dstack 环境中。
+> - Onboard 成功后，新 KMS 的 `bootstrap_info` 为 `null`（仅源 KMS 保留 Bootstrap 时的 attestation）。
 
----
-
-## 11. 生产安全建议
-
-1. 不要在生产长期使用 `ZERO32`。
-2. 不要在生产长期使用 `--allow-any-device`。
-3. 对调试端口（18000/18545）做网络收敛或关闭。
-4. 私钥使用 KMS/HSM 或 CI Secret 管理，避免明文落盘。
-5. 文档与对外材料建议使用占位符，避免暴露真实实例 ID、IP、钱包地址。
 
 ---
 
-## 12. 常见问题
 
-### 12.1 镜像拉取超时
-
-表现：串口日志出现 `i/o timeout`。
-处理：重试部署，必要时更换镜像源或网络出口。
-
-### 12.2 `deploy --delete` 卡在停止阶段
-
-可在云侧确认实例状态后，再执行重试。
-
-### 12.3 端口曾可用、重建实例后不通
-
-在新版 `dstack-cloud` 中已修复"实例重建后防火墙 tag 未自动附加"的问题。
-若你使用旧版本，请升级后重试。
-
-### 12.4 合约部署报 "no code at address"
-
-公共 RPC 上的读取延迟导致。合约通常已成功部署，可通过 [Base Sepolia 区块浏览器](https://sepolia.basescan.org) 确认。
-
-### 12.5 `.env` 文件与 `dstack-cloud` 冲突
-
-`dstack-cloud` 会将项目目录中的 `.env` 当作需要加密的密钥文件（仅 `--key-provider kms` 模式支持）。在 TPM 模式下使用 `.env` 会报错：
-
-```
-.env found but KMS is not enabled. Enable KMS with --key-provider kms or remove .env
-```
-
-**解决方法**：不要在项目目录放 `.env`，改为在 `prelaunch.sh` 中生成 `.env` 文件（参见第 6.2 节）。
-
-### 12.6 Helios 容器启动失败
-
-- helios 已内置在 KMS 镜像中。如果启动报 `network not recognized`，说明镜像中的 helios 版本不支持当前网络，需要使用 `workshop/kms/builder/` 重新构建镜像。
-- 检查 `consensus-rpc` / `execution-rpc` 端点是否可访问。
-
----
-
-## 13. 资源回收
+## 12. 资源回收
 
 ```bash
 # GCP

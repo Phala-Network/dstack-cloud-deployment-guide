@@ -1,10 +1,12 @@
 # dstack-kms production auth path (Direct RPC)
 #
+# KMS starts an HTTP onboard service on first boot.
+# After Bootstrap or Onboard completes, restart transitions to HTTPS.
+#
 # Usage:
-#   cp .env.example .env
-#   # fill ETH_RPC_URL / KMS_CONTRACT_ADDR / KMS_DOMAIN
 #   cp docker-compose.direct.yaml docker-compose.yaml
 #   docker compose up -d
+#   # then call /prpc/Onboard.Bootstrap via curl, followed by /finish
 
 services:
   auth-api:
@@ -18,7 +20,7 @@ services:
       - ETH_RPC_URL=${ETH_RPC_URL:?set ETH_RPC_URL in .env}
       - KMS_CONTRACT_ADDR=${KMS_CONTRACT_ADDR:?set KMS_CONTRACT_ADDR in .env}
       - DSTACK_REPO=${DSTACK_REPO:-https://github.com/Phala-Network/dstack-cloud.git}
-      - DSTACK_REF=${DSTACK_REF:-master}
+      - DSTACK_REF=${DSTACK_REF:-fc6a43fe}
     volumes:
       - auth-state:/state
     command:
@@ -54,8 +56,6 @@ services:
       - /var/run/dstack.sock:/var/run/dstack.sock
     ports:
       - "${KMS_HTTPS_PORT:-12001}:8000"
-    environment:
-      - KMS_DOMAIN=${KMS_DOMAIN:?set KMS_DOMAIN in .env}
     command:
       - sh
       - -c
@@ -93,7 +93,7 @@ services:
 
         [core.onboard]
         enabled = true
-        auto_bootstrap_domain = "$${KMS_DOMAIN}"
+        auto_bootstrap_domain = ""
         quote_enabled = true
         address = "0.0.0.0"
         port = 8000
