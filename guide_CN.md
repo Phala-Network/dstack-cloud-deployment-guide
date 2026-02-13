@@ -12,8 +12,8 @@
 - **KMS 运行环境**：GCP Confidential VM (TDX) 上的 dstack OS
 - **认证方式**：链上授权（生产模式）
 - **两种链路**：
-  - Direct RPC：`auth-api -> 公共 RPC`
-  - Light Client：`auth-api -> helios -> 公共 RPC`
+  - Direct RPC：`kms -> auth-api -> 公共 RPC（合约调用）`
+  - Light Client：`kms -> auth-api -> helios（合约调用） -> 公共 RPC（数据同步）`
 - **调用方**：AWS Nitro Enclave 应用
 
 ---

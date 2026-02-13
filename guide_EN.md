@@ -12,8 +12,8 @@
 - **KMS Runtime**: dstack OS on GCP Confidential VM (TDX)
 - **Authentication**: On-chain authorization (production mode)
 - **Two Connectivity Modes**:
-  - Direct RPC: `auth-api -> public RPC`
-  - Light Client: `auth-api -> helios -> public RPC`
+  - Direct RPC: `kms -> auth-api -> public RPC (contract execution)`
+  - Light Client: `kms -> auth-api -> helios (contract execution) -> public RPC (data sync)`
 - **Caller**: AWS Nitro Enclave application
 
 ---
