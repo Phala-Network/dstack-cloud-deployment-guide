@@ -90,12 +90,6 @@ cd dstack-gcp-guide
 - `18000/tcp`：internal auth-api（调试，可选）
 - `18545/tcp`：internal helios eth RPC（调试，可选，仅 light client）
 
-### 2.7 "最新版本"约定
-
-- KMS 镜像默认使用：`cr.kvin.wang/dstack-kms:latest`
-- `auth-api` 依赖源码 pin 到：`DSTACK_REF=fc6a43fe`（[dstack-cloud master](https://github.com/Phala-Network/dstack-cloud/commit/fc6a43fe)）
-- `dstack-nitro-enclave-app` 使用 `main` 分支 + 仓库内已更新的 submodule 指针（无需手工切换子模块 commit）
-
 ---
 
 ## 3. 创建 GCP KMS 项目（TPM 模式）
@@ -254,7 +248,7 @@ KMS_IMAGE=cr.kvin.wang/dstack-kms:latest
 ETH_RPC_URL=https://sepolia.base.org
 KMS_CONTRACT_ADDR=<KMS_CONTRACT_ADDR>
 DSTACK_REPO=https://github.com/Phala-Network/dstack-cloud.git
-DSTACK_REF=fc6a43fe
+DSTACK_REF=ecbc9e0493015dba41eb0bdf55c7e12fa0a04267
 ENVEOF
 EOF
 ```
@@ -614,7 +608,7 @@ npx hardhat kms:add-device 0x<DEVICE_ID> --network custom
 ```bash
 curl -s "http://<NEW_KMS_DOMAIN>:12001/prpc/Onboard.Onboard?json" \
   -d '{
-    "source_url": "https://source-kms.example.com:12001/prpc",
+    "source_url": "https://source-kms.example.com:12001",
     "domain": "<NEW_KMS_DOMAIN>"
   }' | jq .
 ```

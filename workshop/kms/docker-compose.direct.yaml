@@ -19,8 +19,8 @@ services:
       - PORT=8000
       - ETH_RPC_URL=${ETH_RPC_URL:?set ETH_RPC_URL in .env}
       - KMS_CONTRACT_ADDR=${KMS_CONTRACT_ADDR:?set KMS_CONTRACT_ADDR in .env}
-      - DSTACK_REPO=${DSTACK_REPO:-https://github.com/Phala-Network/dstack-cloud.git}
-      - DSTACK_REF=${DSTACK_REF:-fc6a43fe}
+      - DSTACK_REPO=${DSTACK_REPO:?set DSTACK_REPO in .env}
+      - DSTACK_REF=${DSTACK_REF:?set DSTACK_REF in .env}
     volumes:
       - auth-state:/state
     command:
