@@ -441,6 +441,7 @@ After `./deploy_host.sh` completes, it generates `deployment.json`:
 cd dstack-nitro-enclave-app
 
 HOST=$(jq -r .public_ip deployment.json) \
+KMS_URL="https://<KMS_DOMAIN>:12001" \
 APP_ID="<APP_ID>" \
 KEY_PATH=./dstack-nitro-enclave-key.pem \
 ./get_keys.sh --show-mrs
@@ -465,7 +466,7 @@ npx hardhat kms:add-image ${OS_IMAGE_HASH} --network custom
 npx hardhat app:add-hash --app-id ${APP_ID} ${OS_IMAGE_HASH} --network custom
 ```
 
-> **Note**: `APP_ID` is baked into the EIF image (via `enclave_run_get_keys.sh`). Different `APP_ID` values produce different `PCR2` values, requiring recomputation and re-registration.
+> **Important**: Both `KMS_URL` and `APP_ID` are baked into the EIF image (via `enclave_run_get_keys.sh`). They affect PCR values and therefore `OS_IMAGE_HASH`. The values used for `--show-mrs` **must be identical** to those used in the actual key retrieval run (Section 8.2). If either value differs, the PCR measurements will not match the registered hash, causing a "Boot denied: OS image is not allowed" error.
 
 ### 8.2 Retrieve Keys
 

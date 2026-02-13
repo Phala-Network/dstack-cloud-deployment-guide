@@ -441,6 +441,7 @@ sudo systemctl restart nitro-enclaves-allocator.service
 cd dstack-nitro-enclave-app
 
 HOST=$(jq -r .public_ip deployment.json) \
+KMS_URL="https://<KMS_DOMAIN>:12001" \
 APP_ID="<APP_ID>" \
 KEY_PATH=./dstack-nitro-enclave-key.pem \
 ./get_keys.sh --show-mrs
@@ -465,7 +466,7 @@ npx hardhat kms:add-image ${OS_IMAGE_HASH} --network custom
 npx hardhat app:add-hash --app-id ${APP_ID} ${OS_IMAGE_HASH} --network custom
 ```
 
-> **注意**：`APP_ID` 会被烘焙进 EIF 镜像（通过 `enclave_run_get_keys.sh`）。不同的 `APP_ID` 会产生不同的 `PCR2`，因此需要重新计算和注册。
+> **重要**：`KMS_URL` 和 `APP_ID` 都会被烘焙进 EIF 镜像（通过 `enclave_run_get_keys.sh`），影响 PCR 值从而影响 `OS_IMAGE_HASH`。`--show-mrs` 使用的值**必须与**实际拉取密钥时（8.2 节）使用的值完全一致。如果任一值不同，PCR 度量值将与链上注册的 hash 不匹配，导致 "Boot denied: OS image is not allowed" 错误。
 
 ### 8.2 拉取密钥
 
