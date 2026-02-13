@@ -435,20 +435,24 @@ After `./deploy_host.sh` completes, it generates `deployment.json`:
 
 ### 8.1 Register Enclave OS Image Hash
 
-`get_keys.sh` first builds the EIF image, and the output shows PCR values. **Before the first run**, you need to run it once to obtain the PCRs, then compute `sha256(pcr0 || pcr1 || pcr2)` and register it on-chain.
-
-> You can also build the EIF separately to obtain PCRs (without an EC2 instance): run `docker build` in the `get-keys/` directory, then `nitro-cli build-enclave`. But the simplest approach is to run `get_keys.sh` once and extract the PCR values from the output.
-
-Compute the OS image hash:
+`get_keys.sh --show-mrs` builds the EIF image on the EC2 host, computes `sha256(pcr0 || pcr1 || pcr2)`, and prints the `OS_IMAGE_HASH` directly:
 
 ```bash
-# Replace with PCR0/PCR1/PCR2 from the EIF build output
-PCR0="<PCR0_HEX>"
-PCR1="<PCR1_HEX>"
-PCR2="<PCR2_HEX>"
+cd dstack-nitro-enclave-app
 
-OS_IMAGE_HASH=$(echo -n "${PCR0}${PCR1}${PCR2}" | xxd -r -p | sha256sum | awk '{print "0x"$1}')
-echo "OS_IMAGE_HASH=${OS_IMAGE_HASH}"
+HOST=$(jq -r .public_ip deployment.json) \
+APP_ID="<APP_ID>" \
+KEY_PATH=./dstack-nitro-enclave-key.pem \
+./get_keys.sh --show-mrs
+```
+
+Example output:
+
+```
+PCR0: 1415501c7caeba0a7aea20f...
+PCR1: 4b4d5b3661b3efc1292090...
+PCR2: 33ae855210ea2ce171925831...
+OS_IMAGE_HASH: 0x1078395c3151831924c255f7b7dec87b3f6bb3bf9db98fe17d43abfbe506407d
 ```
 
 Register on-chain (run in the `dstack-nitro-enclave-app/dstack/kms/auth-eth` directory):

@@ -435,23 +435,27 @@ sudo systemctl restart nitro-enclaves-allocator.service
 
 ### 8.1 注册 Enclave OS Image Hash
 
-`get_keys.sh` 会先构建 EIF 镜像，输出中可以看到 PCR 值。**首次运行前**，需要先跑一遍获取 PCR，然后计算 `sha256(pcr0 || pcr1 || pcr2)` 并注册到链上。
-
-> 也可以先单独构建 EIF 来获取 PCR（无需 EC2）：在 `get-keys/` 目录下执行 `docker build`，然后 `nitro-cli build-enclave`。但最简单的方式是先跑一次 `get_keys.sh`，从输出中提取 PCR 值。
-
-计算 OS image hash：
+`get_keys.sh --show-mrs` 会在 EC2 上构建 EIF 镜像，计算 `sha256(pcr0 || pcr1 || pcr2)` 并直接输出 `OS_IMAGE_HASH`：
 
 ```bash
-# 将 EIF 构建输出中的 PCR0/PCR1/PCR2 替换到下方
-PCR0="<PCR0_HEX>"
-PCR1="<PCR1_HEX>"
-PCR2="<PCR2_HEX>"
+cd dstack-nitro-enclave-app
 
-OS_IMAGE_HASH=$(echo -n "${PCR0}${PCR1}${PCR2}" | xxd -r -p | sha256sum | awk '{print "0x"$1}')
-echo "OS_IMAGE_HASH=${OS_IMAGE_HASH}"
+HOST=$(jq -r .public_ip deployment.json) \
+APP_ID="<APP_ID>" \
+KEY_PATH=./dstack-nitro-enclave-key.pem \
+./get_keys.sh --show-mrs
 ```
 
-注册到链上（在 `dstack-nitro-enclave-app/dstack/kms/auth-eth` 目录下执行）：
+输出示例：
+
+```
+PCR0: 1415501c7caeba0a7aea20f...
+PCR1: 4b4d5b3661b3efc1292090...
+PCR2: 33ae855210ea2ce171925831...
+OS_IMAGE_HASH: 0x1078395c3151831924c255f7b7dec87b3f6bb3bf9db98fe17d43abfbe506407d
+```
+
+将 `OS_IMAGE_HASH` 注册到链上（在 `dstack-nitro-enclave-app/dstack/kms/auth-eth` 目录下执行）：
 
 ```bash
 # 注册 OS image hash 到 KMS 合约
