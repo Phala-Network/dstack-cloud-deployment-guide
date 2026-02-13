@@ -96,9 +96,10 @@ Open ports:
 
 ```bash
 # Create a dstack-cloud project in your working directory
-mkdir -p workshop-run && cd workshop-run
+# (stay in the dstack-cloud-deployment-guide root — later sections reference paths relative to it)
+mkdir -p workshop-run
 
-dstack-cloud new kms-prod \
+dstack-cloud new workshop-run/kms-prod \
   --os-image dstack-cloud-0.6.0 \
   --key-provider tpm \
   --instance-name dstack-kms
@@ -178,7 +179,14 @@ Record from the output:
 - `DstackKms Proxy` (used later as `KMS_CONTRACT_ADDR`)
 
 > **Known issue**: When deploying on a public RPC, the script may report a `Contract deployment failed - no code at address` error.
-> This is typically a race condition caused by RPC read latency — the contract has actually been deployed successfully. You can confirm the contract address has code via a block explorer.
+> This is typically a race condition caused by RPC read latency — the contract has actually been deployed successfully.
+> The `DstackKms Proxy deployed to:` line still appears in the output before the error — record that address.
+> You can verify the contract was deployed by checking for code at the address:
+> ```bash
+> cast code <KMS_CONTRACT_ADDR> --rpc-url https://sepolia.base.org
+> # Should return bytecode (not "0x") if deployment succeeded
+> ```
+> Alternatively, confirm via a block explorer such as https://sepolia.basescan.org.
 
 ### 4.3 Create an Application
 
@@ -510,7 +518,7 @@ jq 'keys' app_keys.json
 ["ca_cert", "disk_crypt_key", "env_crypt_key", "gateway_app_id", "k256_key", "k256_signature", "key_provider"]
 ```
 
-- `enclave_console.log` — enclave kernel boot log
+- `enclave_console.log` — enclave kernel boot log (only generated when `DEBUG_ENCLAVE=1` is set; absent by default)
 - `ncat_keys.log`
 
 ---
@@ -519,7 +527,7 @@ jq 'keys' app_keys.json
 
 > The `cr.kvin.wang/dstack-kms:latest` image already includes the helios binary (see `workshop/kms/builder/`).
 
-Simply replace the compose file with the light template. The `prelaunch.sh` is the same as the Direct RPC version (no `ETH_RPC_URL` needed, since auth-api uses the local helios RPC):
+Simply replace the compose file with the light template. The `prelaunch.sh` is the same as the Direct RPC version — `ETH_RPC_URL` in the `.env` file is ignored because the light compose template hardcodes `ETH_RPC_URL=http://helios:8545` for auth-api:
 
 ```bash
 # Use the light template from this repository
@@ -650,7 +658,7 @@ Both should return the same `k256_pubkey` (shared identity). Different `ca_cert`
 ---
 
 
-## 12. Resource Cleanup
+## 11. Resource Cleanup
 
 ```bash
 # GCP

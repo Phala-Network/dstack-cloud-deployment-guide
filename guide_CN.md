@@ -96,9 +96,10 @@ cd dstack-cloud-deployment-guide
 
 ```bash
 # 在你的工作目录中创建 dstack-cloud 项目
-mkdir -p workshop-run && cd workshop-run
+# （留在 dstack-cloud-deployment-guide 根目录——后续章节的路径都以此为基准）
+mkdir -p workshop-run
 
-dstack-cloud new kms-prod \
+dstack-cloud new workshop-run/kms-prod \
   --os-image dstack-cloud-0.6.0 \
   --key-provider tpm \
   --instance-name dstack-kms
@@ -178,7 +179,14 @@ DstackKms Proxy deployed to: 0xFaAD...4DBC
 - `DstackKms Proxy`（后续作为 `KMS_CONTRACT_ADDR`）
 
 > **已知问题**：在公共 RPC 上部署时，脚本可能报 `Contract deployment failed - no code at address` 错误。
-> 这通常是 RPC 读取延迟导致的竞态条件，合约实际已成功部署。可通过区块浏览器确认合约地址是否有代码。
+> 这通常是 RPC 读取延迟导致的竞态条件，合约实际已成功部署。
+> 报错前 `DstackKms Proxy deployed to:` 行仍会输出——记录该地址。
+> 可通过以下命令确认合约已部署：
+> ```bash
+> cast code <KMS_CONTRACT_ADDR> --rpc-url https://sepolia.base.org
+> # 返回字节码（非 "0x"）即表示部署成功
+> ```
+> 也可通过区块浏览器（如 https://sepolia.basescan.org）确认。
 
 ### 4.3 创建应用
 
@@ -510,7 +518,7 @@ jq 'keys' app_keys.json
 ["ca_cert", "disk_crypt_key", "env_crypt_key", "gateway_app_id", "k256_key", "k256_signature", "key_provider"]
 ```
 
-- `enclave_console.log` — enclave 内核启动日志
+- `enclave_console.log` — enclave 内核启动日志（仅在设置 `DEBUG_ENCLAVE=1` 时生成，默认不存在）
 - `ncat_keys.log`
 
 ---
@@ -519,7 +527,7 @@ jq 'keys' app_keys.json
 
 > `cr.kvin.wang/dstack-kms:latest` 镜像已内置 helios 二进制（见 `workshop/kms/builder/`）。
 
-只需将 compose 文件替换为 light 模板。`prelaunch.sh` 与 Direct RPC 版本相同（无需 `ETH_RPC_URL`，因为 auth-api 使用 helios 本地 RPC）：
+只需将 compose 文件替换为 light 模板。`prelaunch.sh` 与 Direct RPC 版本相同——`.env` 中的 `ETH_RPC_URL` 会被忽略，因为 light compose 模板已将 auth-api 的 `ETH_RPC_URL` 硬编码为 `http://helios:8545`：
 
 ```bash
 # 使用本仓库 light 模板
@@ -650,7 +658,7 @@ curl -sk "https://<NEW_KMS_DOMAIN>:12001/prpc/GetMeta?json" -d '{}' | jq .k256_p
 ---
 
 
-## 12. 资源回收
+## 11. 资源回收
 
 ```bash
 # GCP
