@@ -76,7 +76,7 @@ dstack-cloud pull https://github.com/Phala-Network/meta-dstack-cloud/releases/do
 ### 2.5 Clone This Guide's Repository
 
 ```bash
-git clone https://github.com/kvinwang/dstack-cloud-deployment-guide.git
+git clone https://github.com/Phala-Network/dstack-cloud-deployment-guide.git
 cd dstack-cloud-deployment-guide
 ```
 
