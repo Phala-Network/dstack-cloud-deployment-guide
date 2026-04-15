@@ -67,11 +67,13 @@ Edit `~/.config/dstack-cloud/config.json` and fill in the following fields:
 ### 2.4 Download the dstack OS Image
 
 ```bash
-# Download and extract
-dstack-cloud pull https://github.com/Phala-Network/meta-dstack-cloud/releases/download/v0.6.0-test/dstack-cloud-0.6.0.tar.gz
+# Download and extract (note: must use the -uki.tar.gz variant)
+dstack-cloud pull https://github.com/Phala-Network/meta-dstack-cloud/releases/download/v0.6.0-test/dstack-cloud-0.6.0-uki.tar.gz
 ```
 
 > This is currently a test release (v0.6.0-test); reproducible build scripts are not yet available.
+>
+> **Important**: The release contains two image variants. You must download the **`-uki.tar.gz`** file (contains `disk.raw` + `auth_hash.txt`), not the plain `.tar.gz` file (which contains separate kernel/rootfs files for bare-metal VMM use). Using the wrong variant will cause `dstack-cloud deploy` to fail with "Boot image not found" and result in an empty `os_image_hash` in attestation.
 
 ### 2.5 Clone This Guide's Repository
 
@@ -653,6 +655,7 @@ Both should return the same `k256_pubkey` (shared identity). Different `ca_cert`
 > **Notes**:
 > - During Onboard, the new KMS connects to the source KMS via RA-TLS (`quote_enabled = true`). Both instances must run in a dstack environment that supports TDX attestation.
 > - After a successful Onboard, the new KMS's `bootstrap_info` is `null` (only the source KMS retains the attestation from Bootstrap).
+> - **DNS must be correct**: The `source_url` domain is resolved by the new KMS from inside the GCP VM using public DNS — not your local `/etc/hosts`. If you redeployed the source KMS and its IP changed, you **must** update the DNS record before calling Onboard. A stale DNS record (e.g., pointing to the new KMS itself) will cause a TLS handshake failure: `received corrupt message of type InvalidContentType`. Alternatively, you can use the source KMS's IP address directly in `source_url` to avoid DNS-related issues.
 
 
 ---

@@ -67,11 +67,13 @@ dstack-cloud config-edit
 ### 2.4 下载 dstack OS 镜像
 
 ```bash
-# 下载并解压
-dstack-cloud pull https://github.com/Phala-Network/meta-dstack-cloud/releases/download/v0.6.0-test/dstack-cloud-0.6.0.tar.gz
+# 下载并解压（注意：必须使用 -uki.tar.gz 版本）
+dstack-cloud pull https://github.com/Phala-Network/meta-dstack-cloud/releases/download/v0.6.0-test/dstack-cloud-0.6.0-uki.tar.gz
 ```
 
 > 当前为测试版本（v0.6.0-test），尚未提供 reproducible build 脚本。
+>
+> **重要**：release 中包含两个镜像版本，必须下载 **`-uki.tar.gz`** 文件（包含 `disk.raw` + `auth_hash.txt`），而非不带 `-uki` 后缀的 `.tar.gz` 文件（后者包含分离的 kernel/rootfs 文件，用于裸机 VMM）。使用错误的版本会导致 `dstack-cloud deploy` 报 "Boot image not found" 错误，并导致 attestation 中 `os_image_hash` 为空。
 
 ### 2.5 clone本教程代码仓库
 
@@ -653,6 +655,7 @@ curl -sk "https://<NEW_KMS_DOMAIN>:12001/prpc/GetMeta?json" -d '{}' | jq .k256_p
 > **注意**：
 > - Onboard 过程中，新 KMS 通过 RA-TLS 连接源 KMS（`quote_enabled = true`），两个实例都必须运行在支持 TDX attestation 的 dstack 环境中。
 > - Onboard 成功后，新 KMS 的 `bootstrap_info` 为 `null`（仅源 KMS 保留 Bootstrap 时的 attestation）。
+> - **DNS 必须正确**：`source_url` 中的域名由新 KMS 在 GCP VM 内部通过公共 DNS 解析——而非本机的 `/etc/hosts`。如果你重新部署过源 KMS 导致 IP 变化，**必须**在调用 Onboard 前更新 DNS 记录。过期的 DNS 记录（例如指向新 KMS 自身）会导致 TLS 握手失败：`received corrupt message of type InvalidContentType`。也可以在 `source_url` 中直接使用源 KMS 的 IP 地址来避免 DNS 相关问题。
 
 
 ---
