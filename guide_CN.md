@@ -715,9 +715,7 @@ EOF
 chmod +x workshop-run/kms-prod/prelaunch.sh
 ```
 
-### 11.4 部署
-
-按 6.4 节的 Bootstrap 流程做一次**全新部署**,操作完全一样:
+### 11.4 部署并完成链上注册
 
 ```bash
 cd workshop-run/kms-prod
@@ -726,21 +724,47 @@ dstack-cloud fw allow 12001
 dstack-cloud fw allow 18000
 ```
 
-然后照 6.4 节对新实例做 Bootstrap + `/finish`。
+等 ~1–2 分钟让 auth-api 容器装好依赖(`curl http://<KMS_DOMAIN>:18000/` 返回 `{"status":"ok"}` 即就绪),然后读出新的 attestation 值:
 
-> 如果之前已经 Bootstrap 过一个不带 agent 的 KMS 现在想**重新部署同一实例**改用新 compose:加入 `datadog-agent` 会改变 `mr_aggregated`,新的测量值必须用 `npx hardhat kms:add`(第 10.1 节)注册到链上,enclave 才拉得到密钥。(Bootstrap 本身不查链,所以单独的 `GetMeta` 测试不需要注册也能通。)
+```bash
+curl -s "http://<KMS_DOMAIN>:12001/prpc/Onboard.GetAttestationInfo?json" | jq .
+```
+
+加入 `datadog-agent` 会同时改变 `mr_aggregated` 和 `device_id`(`prelaunch.sh` 内容会被算进 app measurement,改 API key 或加新服务都会让两者同时翻新)。新值必须**先**注册到链上再调 Bootstrap —— `bootAuth/kms` 校验在第一次 `Onboard.Bootstrap` 时就会跑,未注册会返回 `boot denied: Aggregated MR not allowed`:
+
+```bash
+# 在 auth-eth/ 目录,RPC_URL / PRIVATE_KEY / KMS_CONTRACT_ADDRESS 已 export
+npx hardhat kms:add-image  0x<OS_IMAGE_HASH>  --network custom   # 已注册过的话幂等
+npx hardhat kms:add        0x<MR_AGGREGATED>  --network custom
+npx hardhat kms:add-device 0x<DEVICE_ID>      --network custom
+```
+
+> 如果 `kms:add` 之后紧接着的 `kms:add-device` 报 `nonce too low`,重试一次即可 —— 公共 RPC 偶尔会在前一笔交易传播完成前返回过期的 nonce。
+
+之后照第 6.4 节走 Bootstrap + `/finish`。
 
 ### 11.5 验证
 
-`dstack-cloud` 没有 `ssh` / `exec` 子命令(TDX CVM 设计上是密封的),只能从外部三个渠道核验:
+`dstack-cloud` 没有 `ssh` / `exec` 子命令(TDX CVM 是密封设计),`dstack-cloud logs` 只是主机串口控制台 —— 只看得到 `app-compose.sh` 的编排输出,**容器内部的 stdout 看不到**。所以只能从外部三个渠道核验:
 
-**串口日志** —— 确认 KMS 暴露了 `/metrics`:
+**串口日志** —— 确认两个容器都起来了:
 
 ```bash
-dstack-cloud logs --lines 200 | grep -E "Prometheus metrics|Starting KMS|datadog"
+dstack-cloud logs --lines 400 | grep -E "Container dstack-(kms|datadog-agent)-1"
 ```
 
-KMS 从 Onboard 模式切到 HTTPS 后应能看到 `Prometheus metrics endpoint enabled at /metrics`。
+```
+[   41.131363] app-compose.sh[768]:  Container dstack-kms-1            Creating
+[   41.176439] app-compose.sh[768]:  Container dstack-kms-1            Created
+[   41.184217] app-compose.sh[768]:  Container dstack-datadog-agent-1  Creating
+[   41.240924] app-compose.sh[768]:  Container dstack-datadog-agent-1  Created
+[   41.530195] app-compose.sh[768]:  Container dstack-kms-1            Starting
+[   41.739152] app-compose.sh[768]:  Container dstack-kms-1            Started
+[   41.747276] app-compose.sh[768]:  Container dstack-datadog-agent-1  Starting
+[   41.934329] app-compose.sh[768]:  Container dstack-datadog-agent-1  Started
+```
+
+(CVM 上 compose project name 是 `dstack`,不是项目目录名 `kms-prod` —— 所以容器叫 `dstack-kms-1` / `dstack-datadog-agent-1`。)
 
 **直接抓** —— 在 CVM 外面手动拉:
 
@@ -761,7 +785,15 @@ dstack_kms_attestation_failures_total 0
 
 **Datadog UI** —— 在 *Metrics Explorer* 里搜 `dstack_kms_attestation_requests_total`。容器日志在 *Logs Explorer*,带 `service:dstack-kms` 标签。
 
-> **Tips**:
+> **API key 坑**:Datadog 的 `DD_API_KEY` 必须是**正好 32 个字母数字**。某些下载链路会给值额外加人类前缀(比如 `pub<32hex>`),只复制 32 位的部分。错误格式的 key 会**静默失败** —— agent 照样跑、不停重试,但什么都到不了 Datadog。在你的本机先测一下:
+> ```bash
+> curl -sw '%{http_code}\n' -X POST "https://api.${DD_SITE}/api/v2/series" \
+>   -H "DD-API-KEY: $DD_API_KEY" -H "Content-Type: application/json" \
+>   -d '{"series":[{"metric":"sanity.test","type":3,"points":[{"timestamp":'$(date +%s)',"value":1}],"resources":[{"name":"laptop","type":"host"}]}]}'
+> ```
+> 正常的 key 返回 `202 {"errors":[]}`;错的会返回 `403` + 格式错误信息。
+
+> **其他 Tips**:
 > - openmetrics 配置里 `namespace: ""` 是为了让 Datadog 的指标名和上游 Prometheus 名字一一对应(`dstack_kms_attestation_requests_total`)。如果设成 `namespace: dstack_kms`,会得到双重前缀 `dstack_kms.dstack_kms_*`。
 > - 抓 dstack guest agent(端口 8090)的 systemd 级指标时,上游 Phala 文档建议给 agent 加 `network_mode: host` —— 本模板**没有**走这条路径。在 TDX CVM 上,host 网络与容器端口映射很容易撞 iptables 规则;抓其他容器时优先用 bridge(本模板默认)。
 

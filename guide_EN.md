@@ -715,9 +715,7 @@ EOF
 chmod +x workshop-run/kms-prod/prelaunch.sh
 ```
 
-### 11.4 Deploy
-
-This is a **fresh deploy with the new compose** — Bootstrap (Section 6.4) still applies; the procedure is identical:
+### 11.4 Deploy and Register On-Chain
 
 ```bash
 cd workshop-run/kms-prod
@@ -726,21 +724,47 @@ dstack-cloud fw allow 12001
 dstack-cloud fw allow 18000
 ```
 
-Then run the Bootstrap + `/finish` calls from Section 6.4 against the new instance.
+Wait ~1–2 minutes for the auth-api container to install/build (`curl http://<KMS_DOMAIN>:18000/` returns `{"status":"ok"}` once ready), then read the new attestation values:
 
-> If you previously bootstrapped a KMS without the agent and want to **redeploy the same instance** with the new compose, see Section 10 — adding `datadog-agent` changes `mr_aggregated`, and the new measurement must be registered via `npx hardhat kms:add` (Section 10.1) before any enclave can fetch keys. (Bootstrap itself does not check the chain, so an isolated `GetMeta` test will work without registration.)
+```bash
+curl -s "http://<KMS_DOMAIN>:12001/prpc/Onboard.GetAttestationInfo?json" | jq .
+```
+
+Adding `datadog-agent` changes both `mr_aggregated` and `device_id` (the `prelaunch.sh` content is hashed into the app measurement, and changing the API key value or adding a service flips both). Register the new values **before** calling Bootstrap — the KMS contract's `bootAuth/kms` check runs on the very first `Onboard.Bootstrap` call, so an unregistered measurement returns `boot denied: Aggregated MR not allowed`:
+
+```bash
+# In auth-eth/, with RPC_URL / PRIVATE_KEY / KMS_CONTRACT_ADDRESS set
+npx hardhat kms:add-image  0x<OS_IMAGE_HASH>  --network custom   # idempotent if already registered
+npx hardhat kms:add        0x<MR_AGGREGATED>  --network custom
+npx hardhat kms:add-device 0x<DEVICE_ID>      --network custom
+```
+
+> If `kms:add-device` reports `nonce too low` immediately after `kms:add`, retry once — the public RPC sometimes returns a stale nonce while the previous tx is still propagating.
+
+Then run Bootstrap + `/finish` exactly as in Section 6.4.
 
 ### 11.5 Verify
 
-`dstack-cloud` does not provide an `ssh`/`exec` subcommand into the CVM (TDX VMs are sealed by design). Verification is therefore done via three external signals:
+`dstack-cloud` does not provide an `ssh`/`exec` subcommand into the CVM (TDX VMs are sealed by design), and `dstack-cloud logs` only streams the host's serial console — it captures `app-compose.sh` orchestration output, not the stdout of containers. So verification happens through three external signals:
 
-**Serial logs** — confirm KMS exposes `/metrics`:
+**Serial logs** — confirm both containers came up:
 
 ```bash
-dstack-cloud logs --lines 200 | grep -E "Prometheus metrics|Starting KMS|datadog"
+dstack-cloud logs --lines 400 | grep -E "Container dstack-(kms|datadog-agent)-1"
 ```
 
-You should see `Prometheus metrics endpoint enabled at /metrics` from the KMS once it has flipped from Onboard mode to HTTPS.
+```
+[   41.131363] app-compose.sh[768]:  Container dstack-kms-1            Creating
+[   41.176439] app-compose.sh[768]:  Container dstack-kms-1            Created
+[   41.184217] app-compose.sh[768]:  Container dstack-datadog-agent-1  Creating
+[   41.240924] app-compose.sh[768]:  Container dstack-datadog-agent-1  Created
+[   41.530195] app-compose.sh[768]:  Container dstack-kms-1            Starting
+[   41.739152] app-compose.sh[768]:  Container dstack-kms-1            Started
+[   41.747276] app-compose.sh[768]:  Container dstack-datadog-agent-1  Starting
+[   41.934329] app-compose.sh[768]:  Container dstack-datadog-agent-1  Started
+```
+
+(The compose project name on the CVM is `dstack`, not the directory name `kms-prod` — that's why containers are `dstack-kms-1` / `dstack-datadog-agent-1`.)
 
 **Direct scrape** — pull the metrics yourself from outside the CVM:
 
@@ -761,7 +785,15 @@ dstack_kms_attestation_failures_total 0
 
 **Datadog UI** — open *Metrics Explorer* and search for `dstack_kms_attestation_requests_total`. Container logs land in *Logs Explorer* with `service:dstack-kms`.
 
-> **Tips**:
+> **API key gotcha**: Datadog's `DD_API_KEY` is exactly **32 alphanumeric characters**. Some downloads bundle the value with a human prefix (e.g. `pub<32hex>`); paste only the 32-char body. A malformed key fails silently — the agent keeps running, retries forever, and nothing reaches Datadog. Sanity-check from your laptop with:
+> ```bash
+> curl -sw '%{http_code}\n' -X POST "https://api.${DD_SITE}/api/v2/series" \
+>   -H "DD-API-KEY: $DD_API_KEY" -H "Content-Type: application/json" \
+>   -d '{"series":[{"metric":"sanity.test","type":3,"points":[{"timestamp":'$(date +%s)',"value":1}],"resources":[{"name":"laptop","type":"host"}]}]}'
+> ```
+> A correct key returns `202 {"errors":[]}`; a bad one returns `403` with a format-error message.
+
+> **Other tips**:
 > - The `namespace: ""` setting in the openmetrics config keeps Datadog metric names identical to the upstream Prometheus names (`dstack_kms_attestation_requests_total`). Setting `namespace: dstack_kms` here would produce a duplicated `dstack_kms.dstack_kms_*` prefix.
 > - For systemd-level metrics from the dstack guest agent (port 8090), the upstream Phala doc recommends `network_mode: host` on the agent — this template **does not** enable that path. On TDX CVMs, host networking combined with container port mapping is prone to iptables conflicts; bridge networking (the default here) is the safer choice when scraping containers.
 
