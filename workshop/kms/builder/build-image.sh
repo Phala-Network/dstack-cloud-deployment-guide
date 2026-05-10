@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Pinned source revisions (override via environment)
-DSTACK_REV=${DSTACK_REV:-6054b84d54c943ff76c975fde8fa478dfc09968c}
+DSTACK_REV=${DSTACK_REV:-b051018a97e9a51748cb493d8139f624a2e68f54}
 HELIOS_REV=${HELIOS_REV:-4a32ac1a9fbcf46386a497e4e0a7232ad1388762}
 
 NAME=${1:?Usage: $0 <image-name>[:<tag>]}
