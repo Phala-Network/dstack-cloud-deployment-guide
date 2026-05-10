@@ -661,7 +661,84 @@ curl -sk "https://<NEW_KMS_DOMAIN>:12001/prpc/GetMeta?json" -d '{}' | jq .k256_p
 ---
 
 
-## 11. 资源回收
+## 11. Datadog 监控集成（可选）
+
+将 KMS 的 Prometheus 指标、容器日志以及主机 telemetry 上送到 Datadog。dstack-kms 镜像默认已开启 `/metrics`(`kms.toml` 中的 `[core.metrics] enabled = true`),本节只是在 compose 中追加一个 sidecar `datadog-agent` 并提供凭据。
+
+参考:[Phala Cloud — Datadog Integration](https://docs.phala.com/phala-cloud/monitoring/datadog-integration)。
+
+### 11.1 前置条件
+
+- 一个含 API Key 的 Datadog 账户
+- 该账户对应的 Datadog site(如 `datadoghq.com`、`us5.datadoghq.com`)
+- 已按第 6 节或第 9 节部署完成并运行的 KMS
+
+> **安全提示**:**不要**把 `DD_API_KEY` 提交到 git。和其他敏感变量一样,通过 `prelaunch.sh` 注入 —— `prelaunch.sh` 在 TDX CVM 启动时执行,每次都会重新写入 `.env`。
+
+### 11.2 追加 Datadog Agent 服务
+
+把 `workshop/monitoring/datadog/datadog-agent.yaml` 中的 service 块追加到项目的 `docker-compose.yaml`:
+
+```bash
+# 在仓库根目录执行
+cat workshop/monitoring/datadog/datadog-agent.yaml >> workshop-run/kms-prod/docker-compose.yaml
+```
+
+该服务通过 Docker DNS 抓取 `https://kms:8000/metrics`,并设置 `tls_verify: false`(KMS 的 RPC TLS 证书是自签的,Agent 信任链中没有),同时通过 Docker socket 收集所有容器日志。
+
+### 11.3 通过 prelaunch.sh 注入 Datadog 变量
+
+把 Datadog 相关变量追加到 `prelaunch.sh` 写入的 `.env`:
+
+```bash
+cat > workshop-run/kms-prod/prelaunch.sh <<'EOF'
+#!/bin/sh
+# Prelaunch script - write .env for docker-compose
+cat > .env <<'ENVEOF'
+KMS_HTTPS_PORT=12001
+AUTH_HTTP_PORT=18000
+KMS_IMAGE=cr.kvin.wang/dstack-kms:latest
+ETH_RPC_URL=https://sepolia.base.org
+KMS_CONTRACT_ADDR=<KMS_CONTRACT_ADDR>
+DSTACK_REPO=https://github.com/Phala-Network/dstack-cloud.git
+DSTACK_REF=14963a2ccb0ec7bef8a496c1ac5ac40f5593145d
+DD_API_KEY=<YOUR_DATADOG_API_KEY>
+DD_SITE=datadoghq.com
+DD_ENV=production
+DD_SERVICE=dstack-kms
+DD_TAGS=env:production,service:dstack-kms
+ENVEOF
+EOF
+```
+
+### 11.4 重新部署
+
+```bash
+cd workshop-run/kms-prod
+dstack-cloud deploy --delete
+```
+
+> 加入 `datadog-agent` 后 compose hash 会变,需要按第 8.1 节同样的流程把新的 compose hash 注册到链上,新实例才能通过 attestation。
+
+### 11.5 验证
+
+CVM 启动后,检查 agent 的 openmetrics check:
+
+```bash
+dstack-cloud ssh -- "docker exec kms-prod-datadog-agent-1 agent status" | \
+  sed -n '/openmetrics/,/^[[:space:]]*$/p'
+```
+
+输出中应能看到 `[OK]` 和非零的 `Metric Samples`。在 Datadog 的 Metrics Explorer 中搜索 `dstack_kms.*` (对应 openmetrics config 中的 `namespace: dstack_kms`),示例指标包括 `dstack_kms_kms_requests_total`、`dstack_kms_process_cpu_seconds_total` 等。容器日志会出现在 Logs Explorer,带 `service:dstack-kms` 标签。
+
+> **Tips**:
+> - 如果想抓 dstack guest agent (端口 8090) 的 systemd 级指标,Phala 官方推荐给 agent 加 `network_mode: host` —— 本模板**没有**配置这条路径,本教程聚焦在 KMS 应用层指标。
+> - 在 TDX CVM 上,`network_mode: host` 与容器端口映射混用容易因内核 iptables 规则冲突;抓其他容器时优先使用 bridge 网络(本模板默认)。
+
+---
+
+
+## 12. 资源回收
 
 ```bash
 # GCP
