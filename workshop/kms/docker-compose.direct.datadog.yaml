@@ -1,0 +1,147 @@
+# dstack-kms (Direct RPC) + Datadog Agent
+#
+# Same as docker-compose.direct.yaml, with a sidecar Datadog Agent that
+# scrapes the KMS Prometheus /metrics endpoint and forwards container logs.
+#
+# Required env (write into .env via prelaunch.sh):
+#   DD_API_KEY=<datadog api key>
+#   DD_SITE=<datadoghq.com|us5.datadoghq.com|...>
+# Optional:
+#   DD_ENV=production
+#   DD_SERVICE=dstack-kms
+#   DD_TAGS=env:production,service:dstack-kms
+#
+# Usage:
+#   cp docker-compose.direct.datadog.yaml docker-compose.yaml
+#   docker compose up -d
+#   # then call /prpc/Onboard.Bootstrap via curl, followed by /finish
+
+services:
+  auth-api:
+    image: node:20-bookworm-slim
+    restart: unless-stopped
+    ports:
+      - "${AUTH_HTTP_PORT:-18000}:8000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - ETH_RPC_URL=${ETH_RPC_URL:?set ETH_RPC_URL in .env}
+      - KMS_CONTRACT_ADDR=${KMS_CONTRACT_ADDR:?set KMS_CONTRACT_ADDR in .env}
+      - DSTACK_REPO=${DSTACK_REPO:?set DSTACK_REPO in .env}
+      - DSTACK_REF=${DSTACK_REF:?set DSTACK_REF in .env}
+    volumes:
+      - auth-state:/state
+    command:
+      - bash
+      - -lc
+      - |
+        set -euo pipefail
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -y >/dev/null
+        apt-get install -y --no-install-recommends git python3 make g++ ca-certificates >/dev/null
+        rm -rf /var/lib/apt/lists/*
+
+        if [ ! -d /state/auth-eth ]; then
+          git clone "$${DSTACK_REPO}" /state/dstack
+          cd /state/dstack
+          git checkout "$${DSTACK_REF}"
+          cp -a kms/auth-eth /state/auth-eth
+          cd /state/auth-eth
+          npm ci --silent
+          npm run build --silent
+        fi
+
+        cd /state/auth-eth
+        exec node dist/src/main.js
+
+  kms:
+    image: ${KMS_IMAGE:-cr.kvin.wang/dstack-kms:latest}
+    restart: unless-stopped
+    depends_on:
+      - auth-api
+    volumes:
+      - kms-volume:/kms
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    ports:
+      - "${KMS_HTTPS_PORT:-12001}:8000"
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        mkdir -p /kms/certs /kms/images
+        cat > /kms/kms.toml <<EOK
+        [rpc]
+        address = "0.0.0.0"
+        port = 8000
+
+        [rpc.tls]
+        key = "/kms/certs/rpc.key"
+        certs = "/kms/certs/rpc.crt"
+
+        [rpc.tls.mutual]
+        ca_certs = "/kms/certs/tmp-ca.crt"
+        mandatory = false
+
+        [core]
+        cert_dir = "/kms/certs"
+        admin_token_hash = ""
+
+        [core.image]
+        verify = true
+        cache_dir = "/kms/images"
+        download_url = "http://localhost:8000/{OS_IMAGE_HASH}.tar.gz"
+        download_timeout = "2m"
+
+        [core.metrics]
+        enabled = true
+
+        [core.auth_api]
+        type = "webhook"
+
+        [core.auth_api.webhook]
+        url = "http://auth-api:8000"
+
+        [core.onboard]
+        enabled = true
+        auto_bootstrap_domain = ""
+        quote_enabled = true
+        address = "0.0.0.0"
+        port = 8000
+        EOK
+
+        exec dstack-kms -c /kms/kms.toml
+
+  datadog-agent:
+    image: registry.datadoghq.com/agent:7
+    restart: unless-stopped
+    depends_on:
+      - kms
+    environment:
+      - DD_API_KEY=${DD_API_KEY:?set DD_API_KEY in .env}
+      - DD_SITE=${DD_SITE:-datadoghq.com}
+      - DD_ENV=${DD_ENV:-production}
+      - DD_SERVICE=${DD_SERVICE:-dstack-kms}
+      - DD_TAGS=${DD_TAGS:-env:production,service:dstack-kms}
+      - DD_LOGS_ENABLED=true
+      - DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL=true
+      - DD_CONTAINER_EXCLUDE=name:datadog-agent
+      - DD_AC_EXCLUDE=name:datadog-agent
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /proc/:/host/proc/:ro
+      - /sys/fs/cgroup/:/host/sys/fs/cgroup:ro
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        mkdir -p /etc/datadog-agent/conf.d/openmetrics.d
+        printf 'instances:\n  - openmetrics_endpoint: https://kms:8000/metrics\n    tls_verify: false\n    namespace: ""\n    metrics:\n      - dstack_kms_.*\n    tags:\n      - service:dstack-kms\n' \
+          > /etc/datadog-agent/conf.d/openmetrics.d/conf.yaml
+        exec agent run
+
+volumes:
+  kms-volume:
+  auth-state:
