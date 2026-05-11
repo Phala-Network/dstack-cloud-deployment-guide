@@ -182,13 +182,17 @@ DstackKms Proxy deployed to: 0xFaAD...4DBC
 
 - `DstackKms Proxy`（后续作为 `KMS_CONTRACT_ADDR`）
 
-> **已知问题(公共 RPC)**:`https://sepolia.base.org` 已经不能用于 `kms:deploy`。自 2026-04-20 Base V1 / `base-reth-node` 在 Sepolia 上线后(见 §9.1),公共 RPC 拒绝 OpenZeppelin upgrades-core 在部署代理前调用的 Hardhat 自省方法:
+> **已知问题(公共 RPC)**:`https://sepolia.base.org` 已经不能用于 `kms:deploy`。该端点跑的是 `base-reth-node`(自 2026-04-20 Base V1 上线起,见 §9.1),`web3` JSON-RPC 命名空间被禁用了。而 OpenZeppelin upgrades-core 在部署代理前会无条件调用 `web3_clientVersion`(只要 chain id 不是 1337 / 31337,`isDevelopmentNetwork` 一定会走这条路),所以直接报错退出:
 > ```
 > ProviderError: Method not found
 >     at HttpProvider.request ...
 >     at async isDevelopmentNetwork (.../@openzeppelin/upgrades-core/src/provider.ts:160)
 > ```
-> `kms:deploy` / `kms:create-app` / `kms:add*` 都用上面那个 Alchemy/Infura/QuickNode URL。CVM 内部 auth-api 的 `eth_call` 在公共 RPC 上仍能跑,所以 §6.2 里 `ETH_RPC_URL` 可以继续填 `https://sepolia.base.org`。
+> 自己验一下:`curl -s -X POST -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"web3_clientVersion","id":1}' https://sepolia.base.org` —— 返回 `Method not found` 就是中招了。
+>
+> **上游修复尚未部署到公共端点。**[base/node#421](https://github.com/base/node/pull/421)(2025-10 合并)把 `web3` 命名空间加进了默认 `reth-entrypoint` 脚本,自建 `base-reth-node` 的运维者可以拿到;但 Base 官方托管的 `sepolia.base.org` 没有跟进。OpenZeppelin upgrades 这一侧也没有开关可以跳过 `isDevelopmentNetwork` 检查。
+>
+> 解决办法:`kms:deploy` / `kms:create-app` / `kms:add*` 都用上面那个 Alchemy/Infura/QuickNode URL。CVM 内部 auth-api 的 `eth_call` 在公共 RPC 上仍能跑,所以 §6.2 里 `ETH_RPC_URL` 可以继续填 `https://sepolia.base.org`。
 >
 > 历史上(更老的 RPC 后端)这一步偶尔还会以 `Contract deployment failed - no code at address` 形式出现:合约其实已经上链,但部署后立即读 RPC 拿不到 code 的竞态。如果你在别的 RPC 上遇到这个,报错前 `DstackKms Proxy deployed to:` 行仍会输出 —— 记录该地址,然后用 `cast code <addr> --rpc-url <RPC>` 或 [sepolia.basescan.org](https://sepolia.basescan.org) 验证即可。
 

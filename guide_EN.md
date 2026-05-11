@@ -182,13 +182,17 @@ Record from the output:
 
 - `DstackKms Proxy` (used later as `KMS_CONTRACT_ADDR`)
 
-> **Known issue (public RPC)**: `https://sepolia.base.org` no longer works for `kms:deploy`. Since the Base V1 / `base-reth-node` rollout on 2026-04-20 (see §9.1), the public endpoint rejects the Hardhat-specific introspection method that OpenZeppelin upgrades-core calls before deploying a proxy:
+> **Known issue (public RPC)**: `https://sepolia.base.org` no longer works for `kms:deploy`. The endpoint runs `base-reth-node` (since the Base V1 rollout on 2026-04-20 — see §9.1) with the `web3` JSON-RPC namespace disabled. OpenZeppelin upgrades-core unconditionally calls `web3_clientVersion` from `isDevelopmentNetwork` before deploying a proxy (any chain whose id is not 1337 / 31337), so the deploy aborts with:
 > ```
 > ProviderError: Method not found
 >     at HttpProvider.request ...
 >     at async isDevelopmentNetwork (.../@openzeppelin/upgrades-core/src/provider.ts:160)
 > ```
-> Use the Alchemy/Infura/QuickNode URL shown above for `kms:deploy` / `kms:create-app` / `kms:add*`. Runtime `eth_call`s from auth-api still work against the public RPC, so `ETH_RPC_URL` inside the CVM (§6.2) can stay on `https://sepolia.base.org`.
+> Verify with `curl -s -X POST -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"web3_clientVersion","id":1}' https://sepolia.base.org` — `Method not found` if affected.
+>
+> **No upstream fix is deployed at the public endpoint.** [base/node#421](https://github.com/base/node/pull/421) (merged Oct 2025) added the `web3` namespace to the default `reth-entrypoint` script for self-hosted operators, but `sepolia.base.org` hasn't picked it up. OpenZeppelin upgrades has no flag to skip the check.
+>
+> Workaround: use the Alchemy/Infura/QuickNode URL shown above for `kms:deploy` / `kms:create-app` / `kms:add*`. Runtime `eth_call`s from auth-api still work against the public RPC, so `ETH_RPC_URL` inside the CVM (§6.2) can stay on `https://sepolia.base.org`.
 >
 > Historically — on older RPC backends — this step also surfaced as a `Contract deployment failed - no code at address` race: the proxy was on chain but the post-deploy read raced ahead of propagation. If you hit that on a different RPC, the `DstackKms Proxy deployed to:` line still appears before the error; record that address and verify with `cast code <addr> --rpc-url <RPC>` or [sepolia.basescan.org](https://sepolia.basescan.org).
 
