@@ -159,7 +159,9 @@ Compiled 19 Solidity files successfully (evm target: paris).
 部署合约：
 
 ```bash
-export RPC_URL="https://sepolia.base.org"
+# 使用支持 Hardhat 网络自省方法的 provider RPC(见下方“已知问题”)。
+# 同一个 URL 后面 §9 也会用到。
+export RPC_URL="https://base-sepolia.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY>"
 export PRIVATE_KEY="<YOUR_PRIVATE_KEY>"
 
 echo "y" | npx hardhat kms:deploy --with-app-impl --network custom
@@ -180,15 +182,15 @@ DstackKms Proxy deployed to: 0xFaAD...4DBC
 
 - `DstackKms Proxy`（后续作为 `KMS_CONTRACT_ADDR`）
 
-> **已知问题**：在公共 RPC 上部署时，脚本可能报 `Contract deployment failed - no code at address` 错误。
-> 这通常是 RPC 读取延迟导致的竞态条件，合约实际已成功部署。
-> 报错前 `DstackKms Proxy deployed to:` 行仍会输出——记录该地址。
-> 可通过以下命令确认合约已部署：
-> ```bash
-> cast code <KMS_CONTRACT_ADDR> --rpc-url https://sepolia.base.org
-> # 返回字节码（非 "0x"）即表示部署成功
+> **已知问题(公共 RPC)**:`https://sepolia.base.org` 已经不能用于 `kms:deploy`。自 2026-04-20 Base V1 / `base-reth-node` 在 Sepolia 上线后(见 §9.1),公共 RPC 拒绝 OpenZeppelin upgrades-core 在部署代理前调用的 Hardhat 自省方法:
 > ```
-> 也可通过区块浏览器（如 https://sepolia.basescan.org）确认。
+> ProviderError: Method not found
+>     at HttpProvider.request ...
+>     at async isDevelopmentNetwork (.../@openzeppelin/upgrades-core/src/provider.ts:160)
+> ```
+> `kms:deploy` / `kms:create-app` / `kms:add*` 都用上面那个 Alchemy/Infura/QuickNode URL。CVM 内部 auth-api 的 `eth_call` 在公共 RPC 上仍能跑,所以 §6.2 里 `ETH_RPC_URL` 可以继续填 `https://sepolia.base.org`。
+>
+> 历史上(更老的 RPC 后端)这一步偶尔还会以 `Contract deployment failed - no code at address` 形式出现:合约其实已经上链,但部署后立即读 RPC 拿不到 code 的竞态。如果你在别的 RPC 上遇到这个,报错前 `DstackKms Proxy deployed to:` 行仍会输出 —— 记录该地址,然后用 `cast code <addr> --rpc-url <RPC>` 或 [sepolia.basescan.org](https://sepolia.basescan.org) 验证即可。
 
 ### 4.3 创建应用
 
@@ -808,6 +810,13 @@ Deleting instance dstack-kms...
 Deleting shared disk image dstack-kms-shared...
 Instance removed.
 ```
+
+> **注意**:`dstack-cloud remove` 只删 instance 和 shared-disk image,通过 `dstack-cloud fw allow` 创建的防火墙规则**不会**被一并删除。这些规则会以 `dstack-<instance>-allow-tcp-<port>` 留在 GCP 上,下次复用同名 instance 时会冲突。手动清理:
+> ```bash
+> dstack-cloud fw remove 12001
+> dstack-cloud fw remove 18000
+> dstack-cloud fw remove 18545   # 只有 §9 Light Client 用过才需要
+> ```
 
 ```bash
 # AWS

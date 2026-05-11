@@ -159,7 +159,9 @@ Compiled 19 Solidity files successfully (evm target: paris).
 Deploy the contract:
 
 ```bash
-export RPC_URL="https://sepolia.base.org"
+# Use a provider RPC that answers Hardhat's network-introspection methods
+# (see "Known issue" below). The same URL is reused later for §9.
+export RPC_URL="https://base-sepolia.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY>"
 export PRIVATE_KEY="<YOUR_PRIVATE_KEY>"
 
 echo "y" | npx hardhat kms:deploy --with-app-impl --network custom
@@ -180,15 +182,15 @@ Record from the output:
 
 - `DstackKms Proxy` (used later as `KMS_CONTRACT_ADDR`)
 
-> **Known issue**: When deploying on a public RPC, the script may report a `Contract deployment failed - no code at address` error.
-> This is typically a race condition caused by RPC read latency — the contract has actually been deployed successfully.
-> The `DstackKms Proxy deployed to:` line still appears in the output before the error — record that address.
-> You can verify the contract was deployed by checking for code at the address:
-> ```bash
-> cast code <KMS_CONTRACT_ADDR> --rpc-url https://sepolia.base.org
-> # Should return bytecode (not "0x") if deployment succeeded
+> **Known issue (public RPC)**: `https://sepolia.base.org` no longer works for `kms:deploy`. Since the Base V1 / `base-reth-node` rollout on 2026-04-20 (see §9.1), the public endpoint rejects the Hardhat-specific introspection method that OpenZeppelin upgrades-core calls before deploying a proxy:
 > ```
-> Alternatively, confirm via a block explorer such as https://sepolia.basescan.org.
+> ProviderError: Method not found
+>     at HttpProvider.request ...
+>     at async isDevelopmentNetwork (.../@openzeppelin/upgrades-core/src/provider.ts:160)
+> ```
+> Use the Alchemy/Infura/QuickNode URL shown above for `kms:deploy` / `kms:create-app` / `kms:add*`. Runtime `eth_call`s from auth-api still work against the public RPC, so `ETH_RPC_URL` inside the CVM (§6.2) can stay on `https://sepolia.base.org`.
+>
+> Historically — on older RPC backends — this step also surfaced as a `Contract deployment failed - no code at address` race: the proxy was on chain but the post-deploy read raced ahead of propagation. If you hit that on a different RPC, the `DstackKms Proxy deployed to:` line still appears before the error; record that address and verify with `cast code <addr> --rpc-url <RPC>` or [sepolia.basescan.org](https://sepolia.basescan.org).
 
 ### 4.3 Create an Application
 
@@ -808,6 +810,13 @@ Deleting instance dstack-kms...
 Deleting shared disk image dstack-kms-shared...
 Instance removed.
 ```
+
+> **Note**: `dstack-cloud remove` deletes the instance and the shared-disk image, but **not** the firewall rules created via `dstack-cloud fw allow`. They'll be left as `dstack-<instance>-allow-tcp-<port>` and collide with future runs that reuse the instance name. Clean them up explicitly:
+> ```bash
+> dstack-cloud fw remove 12001
+> dstack-cloud fw remove 18000
+> dstack-cloud fw remove 18545   # only if you ran §9 Light Client
+> ```
 
 ```bash
 # AWS
