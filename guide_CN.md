@@ -292,13 +292,27 @@ EOF
 
 `dstack-cloud new` 创建的 `.user-config` 默认是 `{}`。纯 Direct RPC 不需要任何密钥——保留 `{}` 即可。
 
+> **`.user-config` 的构造**:它就是一个 JSON 对象。一次性手填用 heredoc 也行,但凡是值来自现成的 env 文件 / 密钥管理器 / 环境变量,都建议用 `jq -n` 构造 —— 它会自动处理 `"` `\` `/` 的 JSON 转义,而且 `--arg` 形式让密钥只走 stdin,不会落到命令行(也就不会留在 shell history / `ps` 输出里)。
+> ```bash
+> # 值来自私有 env 文件 / 密钥管理器 / 交互输入,等等
+> DD_API_KEY="<Datadog 给的 32 位字母数字>"; DD_SITE="datadoghq.com"
+>
+> jq -n --arg k "$DD_API_KEY" --arg s "$DD_SITE" '{
+>   DD_API_KEY: $k, DD_SITE: $s,
+>   DD_ENV: "production", DD_SERVICE: "dstack-kms",
+>   DD_TAGS: "env:production,service:dstack-kms"
+> }' > workshop-run/kms-prod/.user-config
+>
+> jq . workshop-run/kms-prod/.user-config   # 校验
+> ```
+
 > **Datadog**:如果在 §6.1 选了 `docker-compose.direct.datadog.yaml`:
 >
 > 1. 在 `prelaunch.sh` 里把白名单改成:
 >    ```
 >    ALLOWED="DD_API_KEY DD_SITE DD_ENV DD_SERVICE DD_TAGS"
 >    ```
-> 2. 把 `.user-config` 写成 JSON:
+> 2. 用上面那段 `jq -n` 写 `.user-config`(或者用下面这种字面 heredoc,看你喜好):
 >    ```bash
 >    cat > workshop-run/kms-prod/.user-config <<'EOF'
 >    {
@@ -658,12 +672,20 @@ ALLOWED="EXECUTION_RPC"
 # (同时要 Datadog: ALLOWED="EXECUTION_RPC DD_API_KEY DD_SITE DD_ENV DD_SERVICE DD_TAGS")
 ```
 
+参照 §6.2 里的“`.user-config` 构造”说明,用 `jq -n` 从 shell 变量构造,密钥不会进命令行,URL 也会被 JSON 安全转义:
+
 ```bash
-cat > workshop-run/kms-prod/.user-config <<'EOF'
-{
-  "EXECUTION_RPC": "https://base-sepolia.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY>"
-}
-EOF
+EXECUTION_RPC="https://base-sepolia.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY>"
+jq -n --arg r "$EXECUTION_RPC" '{EXECUTION_RPC: $r}' \
+  > workshop-run/kms-prod/.user-config
+```
+
+如果 `EXECUTION_RPC=...` 已经放在某个私有 env 文件里(例如 `alchemy.env`),一行 source 完直接生成 JSON 形式:
+
+```bash
+. ./alchemy.env   # sets EXECUTION_RPC
+jq -n --arg r "$EXECUTION_RPC" '{EXECUTION_RPC: $r}' \
+  > workshop-run/kms-prod/.user-config
 ```
 
 > **Datadog(可选)**:改用 `workshop/kms/docker-compose.light.datadog.yaml`,然后按 §6.2 追加 `DD_*` 环境变量、按 §6.5 末尾的验证块自检。

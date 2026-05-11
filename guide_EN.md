@@ -292,13 +292,27 @@ Replace `<KMS_CONTRACT_ADDR>` with the actual value. `jq` is included in the dst
 
 `dstack-cloud new` initializes `.user-config` to `{}`. Plain Direct RPC needs no secrets — leave it `{}`.
 
+> **Building `.user-config`**: it's a plain JSON object. For one-off setup a heredoc with literal values is fine, but if any value comes from an existing env file or a secret manager, build with `jq -n` instead — it handles JSON escaping correctly when values contain `"`, `\`, or `/`, and the `--arg` form keeps the secret on stdin only (not on the command line, where it'd land in shell history / `ps` output).
+> ```bash
+> # values from a private env file, secret manager, password prompt, …
+> DD_API_KEY="<32-char hex from Datadog>"; DD_SITE="datadoghq.com"
+>
+> jq -n --arg k "$DD_API_KEY" --arg s "$DD_SITE" '{
+>   DD_API_KEY: $k, DD_SITE: $s,
+>   DD_ENV: "production", DD_SERVICE: "dstack-kms",
+>   DD_TAGS: "env:production,service:dstack-kms"
+> }' > workshop-run/kms-prod/.user-config
+>
+> jq . workshop-run/kms-prod/.user-config   # validate
+> ```
+
 > **Datadog**: if you used `docker-compose.direct.datadog.yaml` in §6.1:
 >
 > 1. In `prelaunch.sh`, change the allowlist:
 >    ```
 >    ALLOWED="DD_API_KEY DD_SITE DD_ENV DD_SERVICE DD_TAGS"
 >    ```
-> 2. Write `.user-config` as JSON:
+> 2. Write `.user-config` with the `jq -n` snippet above (or the literal heredoc form if you prefer):
 >    ```bash
 >    cat > workshop-run/kms-prod/.user-config <<'EOF'
 >    {
@@ -658,12 +672,20 @@ ALLOWED="EXECUTION_RPC"
 # (combine with Datadog: ALLOWED="EXECUTION_RPC DD_API_KEY DD_SITE DD_ENV DD_SERVICE DD_TAGS")
 ```
 
+Build `.user-config` (see §6.2 for the JSON-construction note — `jq -n` from a shell variable keeps the key off the command line and JSON-escapes the URL safely):
+
 ```bash
-cat > workshop-run/kms-prod/.user-config <<'EOF'
-{
-  "EXECUTION_RPC": "https://base-sepolia.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY>"
-}
-EOF
+EXECUTION_RPC="https://base-sepolia.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY>"
+jq -n --arg r "$EXECUTION_RPC" '{EXECUTION_RPC: $r}' \
+  > workshop-run/kms-prod/.user-config
+```
+
+Or, if you already keep `EXECUTION_RPC=...` in a private env file (e.g. `alchemy.env`), turn it into the JSON shape in one line:
+
+```bash
+. ./alchemy.env   # sets EXECUTION_RPC
+jq -n --arg r "$EXECUTION_RPC" '{EXECUTION_RPC: $r}' \
+  > workshop-run/kms-prod/.user-config
 ```
 
 > **Datadog (optional)**: use `workshop/kms/docker-compose.light.datadog.yaml` instead. Apply the `DD_*` env-var addition from §6.2 and the verification block from §6.5.
