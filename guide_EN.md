@@ -92,6 +92,30 @@ Open ports:
 - `18000/tcp`: internal auth-api (debugging, optional)
 - `18545/tcp`: internal helios eth RPC (debugging, optional, light client only)
 
+### 2.7 Base Sepolia RPC (provider URL, not the public endpoint)
+
+Get a Base Sepolia RPC URL from a provider — Alchemy / Infura / QuickNode free tier all work. Keep it handy; you'll reuse it in §4 (Hardhat tasks) and §9 (helios `EXECUTION_RPC`).
+
+```bash
+export RPC_URL="https://base-sepolia.g.alchemy.com/v2/<YOUR_KEY>"
+```
+
+**Don't use `https://sepolia.base.org` for this.** Since the Base V1 / `base-reth-node` rollout on 2026-04-20, the public endpoint runs with most non-`eth_*` namespaces stripped, which breaks two specific things this guide needs:
+
+- `web3_clientVersion` is missing → `kms:deploy` aborts during OpenZeppelin upgrades-core's `isDevelopmentNetwork` check with `ProviderError: Method not found` (details in §4.2 callout).
+- `eth_getProof` is missing → helios light client can't verify state reads (details in §9.1).
+
+`sepolia.base.org` is still fine for runtime `eth_call`s — i.e. `ETH_RPC_URL` *inside* the KMS CVM in Direct RPC mode (§6.2) can stay on the public endpoint. The provider URL is only needed for tooling on your laptop and (in Light Client mode) for helios.
+
+One-line sanity check before you start:
+
+```bash
+curl -s -X POST -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","method":"web3_clientVersion","id":1}' "$RPC_URL"
+# Expect e.g. {"jsonrpc":"2.0","id":1,"result":"reth/v1.11.3-.../base/v0.7.6"}
+# If you get "Method not found", you're hitting a stripped-down endpoint — switch provider.
+```
+
 ---
 
 ## 3. Create GCP KMS Project (TPM Mode)
@@ -159,9 +183,7 @@ Compiled 19 Solidity files successfully (evm target: paris).
 Deploy the contract:
 
 ```bash
-# Use a provider RPC that answers Hardhat's network-introspection methods
-# (see "Known issue" below). The same URL is reused later for §9.
-export RPC_URL="https://base-sepolia.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY>"
+# RPC_URL is the provider URL from §2.7 — do NOT use https://sepolia.base.org here.
 export PRIVATE_KEY="<YOUR_PRIVATE_KEY>"
 
 echo "y" | npx hardhat kms:deploy --with-app-impl --network custom
@@ -182,17 +204,13 @@ Record from the output:
 
 - `DstackKms Proxy` (used later as `KMS_CONTRACT_ADDR`)
 
-> **Known issue (public RPC)**: `https://sepolia.base.org` no longer works for `kms:deploy`. The endpoint runs `base-reth-node` (since the Base V1 rollout on 2026-04-20 — see §9.1) with the `web3` JSON-RPC namespace disabled. OpenZeppelin upgrades-core unconditionally calls `web3_clientVersion` from `isDevelopmentNetwork` before deploying a proxy (any chain whose id is not 1337 / 31337), so the deploy aborts with:
+> **If you ignored §2.7 and used `https://sepolia.base.org`**, `kms:deploy` aborts with:
 > ```
 > ProviderError: Method not found
 >     at HttpProvider.request ...
 >     at async isDevelopmentNetwork (.../@openzeppelin/upgrades-core/src/provider.ts:160)
 > ```
-> Verify with `curl -s -X POST -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"web3_clientVersion","id":1}' https://sepolia.base.org` — `Method not found` if affected.
->
-> **No upstream fix is deployed at the public endpoint.** [base/node#421](https://github.com/base/node/pull/421) (merged Oct 2025) added the `web3` namespace to the default `reth-entrypoint` script for self-hosted operators, but `sepolia.base.org` hasn't picked it up. OpenZeppelin upgrades has no flag to skip the check.
->
-> Workaround: use the Alchemy/Infura/QuickNode URL shown above for `kms:deploy` / `kms:create-app` / `kms:add*`. Runtime `eth_call`s from auth-api still work against the public RPC, so `ETH_RPC_URL` inside the CVM (§6.2) can stay on `https://sepolia.base.org`.
+> OpenZeppelin upgrades-core calls `web3_clientVersion` from `isDevelopmentNetwork` before deploying any proxy (any chain id ≠ 1337 / 31337), and `base-reth-node` behind the public endpoint runs with the `web3` namespace disabled. [base/node#421](https://github.com/base/node/pull/421) (merged Oct 2025) enabled it in the upstream `reth-entrypoint` script for self-hosted operators, but `sepolia.base.org` hasn't picked it up; OpenZeppelin has no flag to skip the check. Fix is to switch to a provider URL (§2.7).
 >
 > Historically — on older RPC backends — this step also surfaced as a `Contract deployment failed - no code at address` race: the proxy was on chain but the post-deploy read raced ahead of propagation. If you hit that on a different RPC, the `DstackKms Proxy deployed to:` line still appears before the error; record that address and verify with `cast code <addr> --rpc-url <RPC>` or [sepolia.basescan.org](https://sepolia.basescan.org).
 
@@ -649,17 +667,15 @@ jq 'keys' app_keys.json
 
 > The `cr.kvin.wang/dstack-kms:latest` image already includes the helios binary (see `workshop/kms/builder/`).
 
-### 9.1 Pick an `EXECUTION_RPC` that serves `eth_getProof`
+### 9.1 `EXECUTION_RPC` — reuse the §2.7 provider URL
 
-Helios verifies every account read against the block's state root by calling `eth_getProof` on the execution RPC ([`core/src/execution/providers/rpc.rs`](https://github.com/a16z/helios/blob/master/core/src/execution/providers/rpc.rs)). There is no "trusted" fallback.
-
-**`https://sepolia.base.org` no longer works.** Since Base V1 activated on Sepolia on 2026-04-20 (see [base/node#1035](https://github.com/base/node/pull/1035) and [#980](https://github.com/base/node/pull/980)), the public endpoint is served by `base-reth-node` with the historical-proofs ExEx disabled by default. `eth_getProof` returns `403 -32601 "rpc method is unsupported"`, which surfaces as `auth-api` 500s (`missing revert data` / `CALL_EXCEPTION`) and `Onboard.Bootstrap` failures (`boot denied: ...`).
-
-Use any provider that exposes `eth_getProof`. The Alchemy free tier is sufficient:
+`EXECUTION_RPC` for helios is the same kind of endpoint as `RPC_URL` in §4 — use the provider URL you set up in §2.7. The KMS image already pulls `helios` from a pinned source; you only need to point it at an execution RPC that serves `eth_getProof`.
 
 ```
-EXECUTION_RPC=https://base-sepolia.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY>
+EXECUTION_RPC=https://base-sepolia.g.alchemy.com/v2/<YOUR_KEY>
 ```
+
+Why not `https://sepolia.base.org`? Helios verifies every account read against the block's state root by calling `eth_getProof` ([`core/src/execution/providers/rpc.rs`](https://github.com/a16z/helios/blob/master/core/src/execution/providers/rpc.rs)) — no "trusted" fallback. Since Base V1 activated on Sepolia on 2026-04-20 (see [base/node#1035](https://github.com/base/node/pull/1035) and [#980](https://github.com/base/node/pull/980)), the public endpoint runs `base-reth-node` with the historical-proofs ExEx disabled by default; `eth_getProof` returns `403 -32601 "rpc method is unsupported"`, which surfaces as `auth-api` 500s (`missing revert data` / `CALL_EXCEPTION`) and `Onboard.Bootstrap` failures (`boot denied: ...`). Same root cause as the §4.2 `web3_clientVersion` issue — different missing namespace, same workaround.
 
 ### 9.2 Replace the compose file and put `EXECUTION_RPC` in `.user-config`
 

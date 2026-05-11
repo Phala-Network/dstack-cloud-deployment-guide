@@ -92,6 +92,30 @@ cd dstack-cloud-deployment-guide
 - `18000/tcp`：internal auth-api（调试，可选）
 - `18545/tcp`：internal helios eth RPC（调试，可选，仅 light client）
 
+### 2.7 Base Sepolia RPC（provider URL，不是公共端点）
+
+准备一个 Base Sepolia provider URL —— Alchemy / Infura / QuickNode 的免费 tier 都够用。后面 §4(Hardhat 任务)和 §9(helios `EXECUTION_RPC`)都会复用它。
+
+```bash
+export RPC_URL="https://base-sepolia.g.alchemy.com/v2/<YOUR_KEY>"
+```
+
+**不要用 `https://sepolia.base.org`。** 自 2026-04-20 Base V1 / `base-reth-node` 上线后,公共端点裁掉了大部分非 `eth_*` 命名空间,本指南需要的两件事正好都被裁了:
+
+- 没有 `web3_clientVersion` → `kms:deploy` 在 OpenZeppelin upgrades-core 的 `isDevelopmentNetwork` 检查时报 `ProviderError: Method not found` 退出(详见 §4.2 提示框)。
+- 没有 `eth_getProof` → helios light client 没法验证状态读取(详见 §9.1)。
+
+`sepolia.base.org` 跑运行时的 `eth_call` 没问题 —— 也就是 Direct RPC 模式下 KMS CVM 内部的 `ETH_RPC_URL`(§6.2)仍可以指向公共端点。Provider URL 只有你笔记本上的工具(§4)以及 Light Client 模式下的 helios(§9)需要。
+
+开干前一行 sanity-check:
+
+```bash
+curl -s -X POST -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","method":"web3_clientVersion","id":1}' "$RPC_URL"
+# 期望:{"jsonrpc":"2.0","id":1,"result":"reth/v1.11.3-.../base/v0.7.6"} 这种
+# 如果返回 "Method not found",说明你撞上裁过的端点了,换一个 provider。
+```
+
 ---
 
 ## 3. 创建 GCP KMS 项目（TPM 模式）
@@ -159,9 +183,7 @@ Compiled 19 Solidity files successfully (evm target: paris).
 部署合约：
 
 ```bash
-# 使用支持 Hardhat 网络自省方法的 provider RPC(见下方“已知问题”)。
-# 同一个 URL 后面 §9 也会用到。
-export RPC_URL="https://base-sepolia.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY>"
+# RPC_URL 是 §2.7 里准备好的 provider URL —— 这里不要用 https://sepolia.base.org。
 export PRIVATE_KEY="<YOUR_PRIVATE_KEY>"
 
 echo "y" | npx hardhat kms:deploy --with-app-impl --network custom
@@ -182,17 +204,13 @@ DstackKms Proxy deployed to: 0xFaAD...4DBC
 
 - `DstackKms Proxy`（后续作为 `KMS_CONTRACT_ADDR`）
 
-> **已知问题(公共 RPC)**:`https://sepolia.base.org` 已经不能用于 `kms:deploy`。该端点跑的是 `base-reth-node`(自 2026-04-20 Base V1 上线起,见 §9.1),`web3` JSON-RPC 命名空间被禁用了。而 OpenZeppelin upgrades-core 在部署代理前会无条件调用 `web3_clientVersion`(只要 chain id 不是 1337 / 31337,`isDevelopmentNetwork` 一定会走这条路),所以直接报错退出:
+> **如果你没看 §2.7,直接用了 `https://sepolia.base.org`**,`kms:deploy` 会报错退出:
 > ```
 > ProviderError: Method not found
 >     at HttpProvider.request ...
 >     at async isDevelopmentNetwork (.../@openzeppelin/upgrades-core/src/provider.ts:160)
 > ```
-> 自己验一下:`curl -s -X POST -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"web3_clientVersion","id":1}' https://sepolia.base.org` —— 返回 `Method not found` 就是中招了。
->
-> **上游修复尚未部署到公共端点。**[base/node#421](https://github.com/base/node/pull/421)(2025-10 合并)把 `web3` 命名空间加进了默认 `reth-entrypoint` 脚本,自建 `base-reth-node` 的运维者可以拿到;但 Base 官方托管的 `sepolia.base.org` 没有跟进。OpenZeppelin upgrades 这一侧也没有开关可以跳过 `isDevelopmentNetwork` 检查。
->
-> 解决办法:`kms:deploy` / `kms:create-app` / `kms:add*` 都用上面那个 Alchemy/Infura/QuickNode URL。CVM 内部 auth-api 的 `eth_call` 在公共 RPC 上仍能跑,所以 §6.2 里 `ETH_RPC_URL` 可以继续填 `https://sepolia.base.org`。
+> OpenZeppelin upgrades-core 部署代理前会无条件调用 `web3_clientVersion`(`isDevelopmentNetwork` 在 chain id ≠ 1337 / 31337 时一定走这条),而公共端点背后的 `base-reth-node` 把 `web3` 命名空间裁掉了。[base/node#421](https://github.com/base/node/pull/421)(2025-10 合并)在上游 `reth-entrypoint` 脚本里加了 `web3`,自建的运维者拿得到;但 `sepolia.base.org` 还没跟进。OpenZeppelin 这一侧也没有开关跳过这个检查。解决办法就是切到 provider URL(§2.7)。
 >
 > 历史上(更老的 RPC 后端)这一步偶尔还会以 `Contract deployment failed - no code at address` 形式出现:合约其实已经上链,但部署后立即读 RPC 拿不到 code 的竞态。如果你在别的 RPC 上遇到这个,报错前 `DstackKms Proxy deployed to:` 行仍会输出 —— 记录该地址,然后用 `cast code <addr> --rpc-url <RPC>` 或 [sepolia.basescan.org](https://sepolia.basescan.org) 验证即可。
 
@@ -649,17 +667,15 @@ jq 'keys' app_keys.json
 
 > `cr.kvin.wang/dstack-kms:latest` 镜像已内置 helios 二进制（见 `workshop/kms/builder/`）。
 
-### 9.1 选一个支持 `eth_getProof` 的 `EXECUTION_RPC`
+### 9.1 `EXECUTION_RPC` —— 沿用 §2.7 那个 provider URL
 
-Helios 每次读账户都会用 `eth_getProof` 拿状态证明并对 block state root 进行验证（[`core/src/execution/providers/rpc.rs`](https://github.com/a16z/helios/blob/master/core/src/execution/providers/rpc.rs)），没有 "trusted" 降级路径。
-
-**`https://sepolia.base.org` 已经不能用了。** 自 2026-04-20 Base V1 在 Sepolia 激活后（[base/node#1035](https://github.com/base/node/pull/1035)、[#980](https://github.com/base/node/pull/980)），公共 RPC 跑的是默认关闭 historical-proofs ExEx 的 `base-reth-node`。`eth_getProof` 现在返回 `403 -32601 "rpc method is unsupported"`，表现为 auth-api 500（`missing revert data` / `CALL_EXCEPTION`）以及 `Onboard.Bootstrap` 报 `boot denied: ...`。
-
-任何暴露 `eth_getProof` 的 provider 都行，Alchemy 免费 tier 够用：
+helios 的 `EXECUTION_RPC` 和 §4 里的 `RPC_URL` 是同一类东西 —— 用你在 §2.7 准备好的那个 provider URL 即可。KMS 镜像里已经内置了 pinned 版本的 helios,你只需要把执行 RPC 指给它一个支持 `eth_getProof` 的端点。
 
 ```
-EXECUTION_RPC=https://base-sepolia.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY>
+EXECUTION_RPC=https://base-sepolia.g.alchemy.com/v2/<YOUR_KEY>
 ```
+
+为什么不能用 `https://sepolia.base.org`?helios 每次读账户都用 `eth_getProof` 拿状态证明,然后对 block state root 验证([`core/src/execution/providers/rpc.rs`](https://github.com/a16z/helios/blob/master/core/src/execution/providers/rpc.rs)),没有 "trusted" 降级。自 2026-04-20 Base V1 在 Sepolia 激活后([base/node#1035](https://github.com/base/node/pull/1035)、[#980](https://github.com/base/node/pull/980)),公共 RPC 跑的是默认关闭 historical-proofs ExEx 的 `base-reth-node`,`eth_getProof` 返回 `403 -32601 "rpc method is unsupported"`,表现为 auth-api 500(`missing revert data` / `CALL_EXCEPTION`)和 `Onboard.Bootstrap` 报 `boot denied: ...`。和 §4.2 那个 `web3_clientVersion` 是同一类问题 —— 不同的命名空间被裁,绕法一样。
 
 ### 9.2 替换 compose 文件并把 `EXECUTION_RPC` 写到 `.user-config`
 
