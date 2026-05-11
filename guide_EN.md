@@ -407,6 +407,17 @@ On first boot, the KMS starts an **HTTP** (not HTTPS) Onboard service on port 12
 > ```
 > If `kms:add-device` reports `nonce too low` immediately after `kms:add`, retry once — the public RPC sometimes returns a stale nonce while the previous tx is propagating.
 
+> **Wait for auth-api before calling Bootstrap.** The KMS Onboard HTTP listener on 12001 comes up before `auth-api` finishes its first-run `npm ci` + compile (the long pole of the 1–2 minute boot). `Onboard.Bootstrap` calls `auth-api` internally; if it isn't reachable yet you'll get:
+> ```
+> "error": "KMS is not allowed to bootstrap: failed to call KMS auth check:
+>   error sending request for url (http://auth-api:8000/bootAuth/kms):
+>   client error (Connect): tcp connect error: Connection refused (os error 111)"
+> ```
+> One-liner readiness gate before Bootstrap:
+> ```bash
+> until curl -sf --max-time 3 "http://<KMS_DOMAIN>:18000/" | jq -e '.status=="ok"' >/dev/null; do sleep 10; done
+> ```
+
 **Call Bootstrap to generate keys:**
 
 ```bash
@@ -724,7 +735,7 @@ dstack-cloud fw allow 18000
 dstack-cloud fw allow 18545
 ```
 
-The Bootstrap process is the same as Section 6.4: wait for the containers to start, then call `Onboard.Bootstrap` + `/finish`.
+The Bootstrap process is the same as Section 6.4: wait for the containers to start, then call `Onboard.Bootstrap` + `/finish`. The §6.4 readiness gate (`curl http://<KMS_DOMAIN>:18000/` returning `"status":"ok"`) is the right wait here too — in Light Client mode it also covers helios initial sync. While helios is still catching up to a recent block, `auth-api` returns 500 with `CALL_EXCEPTION` / `missing revert data` (helios can't supply the state proof yet); a Bootstrap call during that window fails the same way. The gate stays red until both are ready.
 
 Verify:
 
@@ -809,6 +820,12 @@ curl -s "http://<NEW_KMS_DOMAIN>:12001/prpc/Onboard.Onboard?json" \
 ```
 
 > An empty object `{}` indicates success. The new KMS has obtained `ca_key`, `k256_key`, and `tmp_ca_key` from the source KMS, and has generated its own RPC certificate.
+>
+> **If the source KMS is running in Light Client mode**, `auth-api` checks `isKmsAllowed()` through its in-CVM helios. Helios needs to verify the block that contains the new KMS's just-registered `mr_aggregated` / `device_id`, which lags the public chain by up to a couple of minutes. During that window Onboard returns:
+> ```
+> "Boot denied: missing revert data (action=\"call\", ..., code=CALL_EXCEPTION)"
+> ```
+> Retry every 30s until `{}` comes back — no action needed, helios just has to catch up.
 
 3. Complete initialization:
 

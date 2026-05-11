@@ -407,6 +407,17 @@ dstack-cloud logs
 > ```
 > 如果 `kms:add` 之后紧接着的 `kms:add-device` 报 `nonce too low`,重试一次 —— 公共 RPC 偶尔会在前一笔交易传播完成前返回过期的 nonce。
 
+> **调用 Bootstrap 前先等 auth-api 就绪。** KMS 在 12001 端口的 Onboard HTTP 服务会在 `auth-api` 首次启动完成 `npm ci` + 编译之前就上线（1–2 分钟启动时间里 auth-api 是长尾）。`Onboard.Bootstrap` 内部会调用 `auth-api`,如果还没就绪会返回：
+> ```
+> "error": "KMS is not allowed to bootstrap: failed to call KMS auth check:
+>   error sending request for url (http://auth-api:8000/bootAuth/kms):
+>   client error (Connect): tcp connect error: Connection refused (os error 111)"
+> ```
+> 调用 Bootstrap 前用一行就绪检查阻塞：
+> ```bash
+> until curl -sf --max-time 3 "http://<KMS_DOMAIN>:18000/" | jq -e '.status=="ok"' >/dev/null; do sleep 10; done
+> ```
+
 **调用 Bootstrap 生成密钥：**
 
 ```bash
@@ -724,7 +735,7 @@ dstack-cloud fw allow 18000
 dstack-cloud fw allow 18545
 ```
 
-Bootstrap 流程与第 6.4 节相同：等待容器启动后，调用 `Onboard.Bootstrap` + `/finish`。
+Bootstrap 流程与第 6.4 节相同：等待容器启动后，调用 `Onboard.Bootstrap` + `/finish`。§6.4 的就绪检查（`curl http://<KMS_DOMAIN>:18000/` 返回 `"status":"ok"`)在这里同样适用 —— Light Client 模式下它还顺带覆盖了 helios 的初始同步。helios 还没追上最新区块时,`auth-api` 会返回 500 加 `CALL_EXCEPTION` / `missing revert data`(helios 还无法提供状态证明);这个窗口里调用 Bootstrap 也会同样失败。等到检查通过,两边就都就绪了。
 
 验证：
 
@@ -809,6 +820,12 @@ curl -s "http://<NEW_KMS_DOMAIN>:12001/prpc/Onboard.Onboard?json" \
 ```
 
 > 空对象 `{}` 表示成功。新 KMS 已从源 KMS 获取 `ca_key`、`k256_key`、`tmp_ca_key`，并生成了自己的 RPC 证书。
+>
+> **如果源 KMS 跑的是 Light Client 模式**,`auth-api` 通过 CVM 里的 helios 来检查 `isKmsAllowed()`。helios 需要验证新 KMS 刚注册 `mr_aggregated` / `device_id` 的那个区块,通常比公共链落后一两分钟。这段时间里 Onboard 会返回:
+> ```
+> "Boot denied: missing revert data (action=\"call\", ..., code=CALL_EXCEPTION)"
+> ```
+> 每 30s 重试一次,直到拿到 `{}` —— 不用做别的,等 helios 追上就行。
 
 3. 完成初始化：
 
