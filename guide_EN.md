@@ -596,16 +596,48 @@ jq 'keys' app_keys.json
 
 > The `cr.kvin.wang/dstack-kms:latest` image already includes the helios binary (see `workshop/kms/builder/`).
 
-Simply replace the compose file with the light template. The `prelaunch.sh` is the same as the Direct RPC version — `ETH_RPC_URL` in the `.env` file is ignored because the light compose template hardcodes `ETH_RPC_URL=http://helios:8545` for auth-api:
+### 9.1 Pick an `EXECUTION_RPC` that serves `eth_getProof`
+
+Helios verifies every account read against the block's state root by calling `eth_getProof` on the execution RPC ([`core/src/execution/providers/rpc.rs`](https://github.com/a16z/helios/blob/master/core/src/execution/providers/rpc.rs)). There is no "trusted" fallback.
+
+**`https://sepolia.base.org` no longer works.** Since Base V1 activated on Sepolia on 2026-04-20 (see [base/node#1035](https://github.com/base/node/pull/1035) and [#980](https://github.com/base/node/pull/980)), the public endpoint is served by `base-reth-node` with the historical-proofs ExEx disabled by default. `eth_getProof` returns `403 -32601 "rpc method is unsupported"`, which surfaces as `auth-api` 500s (`missing revert data` / `CALL_EXCEPTION`) and `Onboard.Bootstrap` failures (`boot denied: ...`).
+
+Use any provider that exposes `eth_getProof`. The Alchemy free tier is sufficient:
+
+```
+EXECUTION_RPC=https://base-sepolia.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY>
+```
+
+### 9.2 Replace the compose file and inject `EXECUTION_RPC`
 
 ```bash
 # Use the light template from this repository
 cp workshop/kms/docker-compose.light.yaml workshop-run/kms-prod/docker-compose.yaml
 ```
 
+The light compose templates now require `EXECUTION_RPC` in `.env` (compose will refuse to start with a clear error otherwise). The `prelaunch.sh` is the same as the Direct RPC version with one extra line — `ETH_RPC_URL` for auth-api is still ignored because the light compose hardcodes `ETH_RPC_URL=http://helios:8545`:
+
+```bash
+cat > workshop-run/kms-prod/prelaunch.sh <<'EOF'
+#!/bin/sh
+cat > .env <<'ENVEOF'
+KMS_HTTPS_PORT=12001
+AUTH_HTTP_PORT=18000
+KMS_IMAGE=cr.kvin.wang/dstack-kms:latest
+ETH_RPC_URL=https://sepolia.base.org
+EXECUTION_RPC=https://base-sepolia.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY>
+KMS_CONTRACT_ADDR=<KMS_CONTRACT_ADDR>
+DSTACK_REPO=https://github.com/Phala-Network/dstack-cloud.git
+DSTACK_REF=14963a2ccb0ec7bef8a496c1ac5ac40f5593145d
+ENVEOF
+EOF
+```
+
 > **Datadog (optional)**: use `workshop/kms/docker-compose.light.datadog.yaml` instead. Apply the `DD_*` env-var addition from §6.2 and the verification block from §6.5.
 
 > To build a KMS image with helios yourself, see `workshop/kms/builder/README.md`.
+
+### 9.3 Deploy
 
 ```bash
 cd workshop-run/kms-prod

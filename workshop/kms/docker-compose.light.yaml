@@ -20,8 +20,11 @@ services:
       - -c
       - |
         set -e
-        CONSENSUS_RPC=https://base-sepolia.operationsolarstorm.org
-        EXECUTION_RPC=https://sepolia.base.org
+        # Helios requires eth_getProof on the execution RPC.
+        # sepolia.base.org no longer serves it since the Base V1 / base-reth-node rollout on 2026-04-20.
+        # Use an Alchemy / Infura / QuickNode endpoint (free tier is enough).
+        CONSENSUS_RPC=${CONSENSUS_RPC:-https://base-sepolia.operationsolarstorm.org}
+        EXECUTION_RPC=${EXECUTION_RPC:?set EXECUTION_RPC in .env (e.g. https://base-sepolia.g.alchemy.com/v2/<KEY>)}
 
         ETH_CHECKPOINT=$$(curl -fsSL https://ethereum-sepolia-beacon-api.publicnode.com/eth/v1/beacon/states/finalized/root | jq -r '.data.root')
 

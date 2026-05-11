@@ -596,16 +596,48 @@ jq 'keys' app_keys.json
 
 > `cr.kvin.wang/dstack-kms:latest` 镜像已内置 helios 二进制（见 `workshop/kms/builder/`）。
 
-只需将 compose 文件替换为 light 模板。`prelaunch.sh` 与 Direct RPC 版本相同——`.env` 中的 `ETH_RPC_URL` 会被忽略，因为 light compose 模板已将 auth-api 的 `ETH_RPC_URL` 硬编码为 `http://helios:8545`：
+### 9.1 选一个支持 `eth_getProof` 的 `EXECUTION_RPC`
+
+Helios 每次读账户都会用 `eth_getProof` 拿状态证明并对 block state root 进行验证（[`core/src/execution/providers/rpc.rs`](https://github.com/a16z/helios/blob/master/core/src/execution/providers/rpc.rs)），没有 "trusted" 降级路径。
+
+**`https://sepolia.base.org` 已经不能用了。** 自 2026-04-20 Base V1 在 Sepolia 激活后（[base/node#1035](https://github.com/base/node/pull/1035)、[#980](https://github.com/base/node/pull/980)），公共 RPC 跑的是默认关闭 historical-proofs ExEx 的 `base-reth-node`。`eth_getProof` 现在返回 `403 -32601 "rpc method is unsupported"`，表现为 auth-api 500（`missing revert data` / `CALL_EXCEPTION`）以及 `Onboard.Bootstrap` 报 `boot denied: ...`。
+
+任何暴露 `eth_getProof` 的 provider 都行，Alchemy 免费 tier 够用：
+
+```
+EXECUTION_RPC=https://base-sepolia.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY>
+```
+
+### 9.2 替换 compose 文件并注入 `EXECUTION_RPC`
 
 ```bash
 # 使用本仓库 light 模板
 cp workshop/kms/docker-compose.light.yaml workshop-run/kms-prod/docker-compose.yaml
 ```
 
+light compose 模板现在要求 `.env` 里提供 `EXECUTION_RPC`（缺则 compose 直接报错退出）。`prelaunch.sh` 与 Direct RPC 版本基本相同，只多加一行 —— auth-api 的 `ETH_RPC_URL` 依然会被忽略，因为 light compose 已硬编码为 `http://helios:8545`：
+
+```bash
+cat > workshop-run/kms-prod/prelaunch.sh <<'EOF'
+#!/bin/sh
+cat > .env <<'ENVEOF'
+KMS_HTTPS_PORT=12001
+AUTH_HTTP_PORT=18000
+KMS_IMAGE=cr.kvin.wang/dstack-kms:latest
+ETH_RPC_URL=https://sepolia.base.org
+EXECUTION_RPC=https://base-sepolia.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY>
+KMS_CONTRACT_ADDR=<KMS_CONTRACT_ADDR>
+DSTACK_REPO=https://github.com/Phala-Network/dstack-cloud.git
+DSTACK_REF=14963a2ccb0ec7bef8a496c1ac5ac40f5593145d
+ENVEOF
+EOF
+```
+
 > **Datadog(可选)**:改用 `workshop/kms/docker-compose.light.datadog.yaml`,然后按 §6.2 追加 `DD_*` 环境变量、按 §6.5 末尾的验证块自检。
 
 > 如需自行构建包含 helios 的 KMS 镜像，参见 `workshop/kms/builder/README.md`。
+
+### 9.3 部署
 
 ```bash
 cd workshop-run/kms-prod
