@@ -250,8 +250,12 @@ cp workshop/kms/docker-compose.direct.yaml workshop-run/kms-prod/docker-compose.
 > **Security boundary**: `prelaunch.sh` is embedded in `app-compose.json`, which the dstack guest-agent serves over HTTP whenever `public_tcbinfo: true` (the default) and which is also bundled into the shared-disk tarball uploaded to GCS during deploy. **Never put secrets in `prelaunch.sh`.**
 >
 > Secrets go in `.user-config` (mounted at `/dstack/.host-shared/.user-config` inside the CVM). dstack stores this file verbatim — it is **not** part of `app-compose.json`, **not** measured (changing it doesn't move `mr_aggregated`, so you can rotate without re-registering on chain), and **not** served by the public TCB-info HTTP endpoint. See [`docs/security/cvm-boundaries.md`](https://github.com/Phala-Network/dstack-cloud/blob/main/docs/security/cvm-boundaries.md) for the full boundary contract.
+>
+> Because `.user-config` is **not** measured, a malicious host could swap it. Two consequences shape how we consume it:
+> 1. **JSON format**, parsed with `jq`. Raw `cat`-then-source would let a substituted file inject shell metacharacters (`KEY="; rm -rf / "`) into the `.env` consumed by docker-compose.
+> 2. **Explicit allowlist of keys** baked into `prelaunch.sh`. Since `prelaunch.sh` is measured (part of `app-compose.json`, hashed into `mr_aggregated`), a malicious host can swap the *value* of a whitelisted key, but cannot introduce new env vars.
 
-Write a `prelaunch.sh` that lays down the non-secret defaults and then overlays anything from `.user-config`:
+Write a `prelaunch.sh` that lays down the non-secret defaults and then pulls whitelisted keys from `.user-config`:
 
 ```bash
 cat > workshop-run/kms-prod/prelaunch.sh <<'EOF'
@@ -266,29 +270,44 @@ KMS_CONTRACT_ADDR=<KMS_CONTRACT_ADDR>
 DSTACK_REPO=https://github.com/Phala-Network/dstack-cloud.git
 DSTACK_REF=14963a2ccb0ec7bef8a496c1ac5ac40f5593145d
 ENVEOF
-# Overlay secrets from .user-config (KEY=VALUE per line; later values win).
-[ -f /dstack/.host-shared/.user-config ] && cat /dstack/.host-shared/.user-config >> .env
+
+# Whitelisted keys to import from .user-config (JSON).
+# Plain Direct RPC needs none; add DD_* for the Datadog variant (see §6.1 note),
+# or EXECUTION_RPC for the Light Client variant (§9).
+ALLOWED=""
+
+UC=/dstack/.host-shared/.user-config
+if [ -f "$UC" ] && [ -n "$ALLOWED" ]; then
+  for key in $ALLOWED; do
+    val=$(jq -r --arg k "$key" '.[$k] // empty' "$UC" | tr -d '\n\r')
+    [ -n "$val" ] && printf '%s=%s\n' "$key" "$val" >> .env
+  done
+fi
 EOF
 ```
 
-Replace `<KMS_CONTRACT_ADDR>` with the actual value.
+Replace `<KMS_CONTRACT_ADDR>` with the actual value. `jq` is included in the dstack OS rootfs.
 
-`dstack-cloud new` creates `.user-config` initialized to `{}`. For the Direct RPC variant **without** Datadog, just blank it (or leave the `{}` — the prelaunch's `>>` append is harmless either way as long as `.env`-parsers ignore the `{}` line):
+`dstack-cloud new` initializes `.user-config` to `{}`. Plain Direct RPC needs no secrets — leave it `{}`.
 
-```bash
-: > workshop-run/kms-prod/.user-config
-```
-
-> **Datadog**: if you used `docker-compose.direct.datadog.yaml` in §6.1, put the `DD_*` keys into `.user-config` (not into `prelaunch.sh`):
-> ```bash
-> cat > workshop-run/kms-prod/.user-config <<'EOF'
-> DD_API_KEY=<32-char hex from Datadog>
-> DD_SITE=datadoghq.com
-> DD_ENV=production
-> DD_SERVICE=dstack-kms
-> DD_TAGS=env:production,service:dstack-kms
-> EOF
-> ```
+> **Datadog**: if you used `docker-compose.direct.datadog.yaml` in §6.1:
+>
+> 1. In `prelaunch.sh`, change the allowlist:
+>    ```
+>    ALLOWED="DD_API_KEY DD_SITE DD_ENV DD_SERVICE DD_TAGS"
+>    ```
+> 2. Write `.user-config` as JSON:
+>    ```bash
+>    cat > workshop-run/kms-prod/.user-config <<'EOF'
+>    {
+>      "DD_API_KEY": "<32-char hex from Datadog>",
+>      "DD_SITE": "datadoghq.com",
+>      "DD_ENV": "production",
+>      "DD_SERVICE": "dstack-kms",
+>      "DD_TAGS": "env:production,service:dstack-kms"
+>    }
+>    EOF
+>    ```
 > `DD_API_KEY` must be exactly **32 alphanumeric characters**. Some sources include a human prefix (e.g. `pub<32hex>`) — paste only the 32-char body, otherwise the agent retries forever and nothing reaches Datadog (silent failure, invisible from outside the CVM). Sanity-check before deploy:
 > ```bash
 > curl -sw '%{http_code}\n' -X POST "https://api.${DD_SITE}/api/v2/series" \
@@ -629,15 +648,21 @@ EXECUTION_RPC=https://base-sepolia.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY>
 cp workshop/kms/docker-compose.light.yaml workshop-run/kms-prod/docker-compose.yaml
 ```
 
-The light compose templates require `EXECUTION_RPC` in `.env` (compose refuses to start with a clear error otherwise). Because the Alchemy URL is a secret, put it in `.user-config` (not in `prelaunch.sh` — see the §6.2 security boundary). The §6.2 `prelaunch.sh` already overlays `.user-config` onto `.env`, so it's reused as-is:
+The light compose templates require `EXECUTION_RPC` in `.env` (compose refuses to start with a clear error otherwise). Because the Alchemy URL is a secret, put it in `.user-config`, and add `EXECUTION_RPC` to the `prelaunch.sh` allowlist from §6.2:
+
+```sh
+# prelaunch.sh — change the allowlist line:
+ALLOWED="EXECUTION_RPC"
+# (combine with Datadog: ALLOWED="EXECUTION_RPC DD_API_KEY DD_SITE DD_ENV DD_SERVICE DD_TAGS")
+```
 
 ```bash
 cat > workshop-run/kms-prod/.user-config <<'EOF'
-EXECUTION_RPC=https://base-sepolia.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY>
+{
+  "EXECUTION_RPC": "https://base-sepolia.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY>"
+}
 EOF
 ```
-
-(If you're also enabling Datadog with the light variant, add the `DD_*` lines from §6.2 to the same file.)
 
 > **Datadog (optional)**: use `workshop/kms/docker-compose.light.datadog.yaml` instead. Apply the `DD_*` env-var addition from §6.2 and the verification block from §6.5.
 

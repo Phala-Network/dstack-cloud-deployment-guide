@@ -250,8 +250,12 @@ cp workshop/kms/docker-compose.direct.yaml workshop-run/kms-prod/docker-compose.
 > **安全边界**:`prelaunch.sh` 内容会被嵌入到 `app-compose.json` 里,而 dstack guest-agent 在 `public_tcbinfo: true`(默认)下会把 `app-compose.json` 通过 HTTP 对外公开;部署时上传到 GCS 的 shared-disk tarball 同样包含它。**千万不要把密钥放进 `prelaunch.sh`。**
 >
 > 密钥放 `.user-config`:这个文件在 CVM 内挂在 `/dstack/.host-shared/.user-config`,dstack 原样存储——**不属于 `app-compose.json`**、**不参与 measurement**(改了不会改 `mr_aggregated`,所以可以轮换密钥而不用重新链上注册)、**不会被 public TCB-info HTTP endpoint 暴露**。完整边界契约见 [`docs/security/cvm-boundaries.md`](https://github.com/Phala-Network/dstack-cloud/blob/main/docs/security/cvm-boundaries.md)。
+>
+> 但正因为 `.user-config` **不参与 measurement**,恶意 host 可以替换它的内容。所以消费方式必须做两件事:
+> 1. **JSON 格式**,用 `jq` 解析。如果直接 `cat`-then-source,被替换的文件可以塞 shell 元字符(`KEY="; rm -rf / "`)进 `.env`。
+> 2. **prelaunch.sh 里写死一份 key 白名单**。`prelaunch.sh` 是被 measure 的(嵌在 `app-compose.json` 里、参与 `mr_aggregated`),所以恶意 host 可以换白名单里某个 key 的*值*,但没法塞新的 env 变量进去。
 
-把非密钥的默认值写进 `prelaunch.sh`,然后让它把 `.user-config` 叠加到 `.env`:
+把非密钥的默认值写进 `prelaunch.sh`,然后用白名单从 `.user-config` 里取值:
 
 ```bash
 cat > workshop-run/kms-prod/prelaunch.sh <<'EOF'
@@ -266,29 +270,44 @@ KMS_CONTRACT_ADDR=<KMS_CONTRACT_ADDR>
 DSTACK_REPO=https://github.com/Phala-Network/dstack-cloud.git
 DSTACK_REF=14963a2ccb0ec7bef8a496c1ac5ac40f5593145d
 ENVEOF
-# 叠加来自 .user-config 的密钥(KEY=VALUE 每行一个;后写的会覆盖)。
-[ -f /dstack/.host-shared/.user-config ] && cat /dstack/.host-shared/.user-config >> .env
+
+# 允许从 .user-config(JSON)里读取的 key 白名单。
+# 纯 Direct RPC 不需要任何密钥;Datadog variant 加 DD_*(见 §6.1 提示);
+# Light Client(§9)加 EXECUTION_RPC。
+ALLOWED=""
+
+UC=/dstack/.host-shared/.user-config
+if [ -f "$UC" ] && [ -n "$ALLOWED" ]; then
+  for key in $ALLOWED; do
+    val=$(jq -r --arg k "$key" '.[$k] // empty' "$UC" | tr -d '\n\r')
+    [ -n "$val" ] && printf '%s=%s\n' "$key" "$val" >> .env
+  done
+fi
 EOF
 ```
 
-替换其中的 `<KMS_CONTRACT_ADDR>` 为实际值。
+替换其中的 `<KMS_CONTRACT_ADDR>` 为实际值。`jq` 在 dstack OS rootfs 里默认就有。
 
-`dstack-cloud new` 创建的 `.user-config` 默认是 `{}`。Direct RPC 不带 Datadog 的话,清空即可(留着 `{}` 也行——`>>` 追加无害,`.env` 解析器会忽略不带 `=` 的行):
+`dstack-cloud new` 创建的 `.user-config` 默认是 `{}`。纯 Direct RPC 不需要任何密钥——保留 `{}` 即可。
 
-```bash
-: > workshop-run/kms-prod/.user-config
-```
-
-> **Datadog**:如果在 §6.1 选了 `docker-compose.direct.datadog.yaml`,把 `DD_*` 写进 `.user-config`(不要写进 `prelaunch.sh`):
-> ```bash
-> cat > workshop-run/kms-prod/.user-config <<'EOF'
-> DD_API_KEY=<Datadog 给的 32 位字母数字>
-> DD_SITE=datadoghq.com
-> DD_ENV=production
-> DD_SERVICE=dstack-kms
-> DD_TAGS=env:production,service:dstack-kms
-> EOF
-> ```
+> **Datadog**:如果在 §6.1 选了 `docker-compose.direct.datadog.yaml`:
+>
+> 1. 在 `prelaunch.sh` 里把白名单改成:
+>    ```
+>    ALLOWED="DD_API_KEY DD_SITE DD_ENV DD_SERVICE DD_TAGS"
+>    ```
+> 2. 把 `.user-config` 写成 JSON:
+>    ```bash
+>    cat > workshop-run/kms-prod/.user-config <<'EOF'
+>    {
+>      "DD_API_KEY": "<Datadog 给的 32 位字母数字>",
+>      "DD_SITE": "datadoghq.com",
+>      "DD_ENV": "production",
+>      "DD_SERVICE": "dstack-kms",
+>      "DD_TAGS": "env:production,service:dstack-kms"
+>    }
+>    EOF
+>    ```
 > `DD_API_KEY` 必须**正好 32 位字母数字**。某些下载链路会给值额外加人类前缀(比如 `pub<32hex>`),只复制 32 位的部分,否则 agent 会无声重试,什么都到不了 Datadog(CVM 外完全看不到失败)。deploy 前先 sanity-check:
 > ```bash
 > curl -sw '%{http_code}\n' -X POST "https://api.${DD_SITE}/api/v2/series" \
@@ -629,15 +648,21 @@ EXECUTION_RPC=https://base-sepolia.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY>
 cp workshop/kms/docker-compose.light.yaml workshop-run/kms-prod/docker-compose.yaml
 ```
 
-light compose 模板要求 `.env` 里提供 `EXECUTION_RPC`(缺则 compose 直接报错退出)。Alchemy URL 属于密钥,写进 `.user-config`(不要写进 `prelaunch.sh`,详见 §6.2 的安全边界)。§6.2 的 `prelaunch.sh` 已经把 `.user-config` 叠加到 `.env`,这里直接复用:
+light compose 模板要求 `.env` 里提供 `EXECUTION_RPC`(缺则 compose 直接报错退出)。Alchemy URL 属于密钥,把它放进 `.user-config`,同时在 §6.2 的 `prelaunch.sh` 白名单里加上 `EXECUTION_RPC`:
+
+```sh
+# prelaunch.sh —— 把白名单改成:
+ALLOWED="EXECUTION_RPC"
+# (同时要 Datadog: ALLOWED="EXECUTION_RPC DD_API_KEY DD_SITE DD_ENV DD_SERVICE DD_TAGS")
+```
 
 ```bash
 cat > workshop-run/kms-prod/.user-config <<'EOF'
-EXECUTION_RPC=https://base-sepolia.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY>
+{
+  "EXECUTION_RPC": "https://base-sepolia.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY>"
+}
 EOF
 ```
-
-(如果同时还要打开 Datadog,把 §6.2 里的 `DD_*` 行加到同一个文件里。)
 
 > **Datadog(可选)**:改用 `workshop/kms/docker-compose.light.datadog.yaml`,然后按 §6.2 追加 `DD_*` 环境变量、按 §6.5 末尾的验证块自检。
 
