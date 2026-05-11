@@ -245,14 +245,18 @@ cp workshop/kms/docker-compose.direct.yaml workshop-run/kms-prod/docker-compose.
 
 > **Datadog (optional)**: use `workshop/kms/docker-compose.direct.datadog.yaml` instead — same services plus a sidecar `datadog-agent` that scrapes the KMS Prometheus `/metrics` endpoint and forwards container logs. The rest of §6 proceeds identically; you'll also add a few `DD_*` env vars in §6.2 and use the verification block at the end of §6.5.
 
-### 6.2 Inject Environment Variables via prelaunch.sh
+### 6.2 Inject Environment Variables via prelaunch.sh + `.user-config`
 
-Edit `prelaunch.sh` in the project directory to write the environment variables needed by docker-compose:
+> **Security boundary**: `prelaunch.sh` is embedded in `app-compose.json`, which the dstack guest-agent serves over HTTP whenever `public_tcbinfo: true` (the default) and which is also bundled into the shared-disk tarball uploaded to GCS during deploy. **Never put secrets in `prelaunch.sh`.**
+>
+> Secrets go in `.user-config` (mounted at `/dstack/.host-shared/.user-config` inside the CVM). dstack stores this file verbatim — it is **not** part of `app-compose.json`, **not** measured (changing it doesn't move `mr_aggregated`, so you can rotate without re-registering on chain), and **not** served by the public TCB-info HTTP endpoint. See [`docs/security/cvm-boundaries.md`](https://github.com/Phala-Network/dstack-cloud/blob/main/docs/security/cvm-boundaries.md) for the full boundary contract.
+
+Write a `prelaunch.sh` that lays down the non-secret defaults and then overlays anything from `.user-config`:
 
 ```bash
 cat > workshop-run/kms-prod/prelaunch.sh <<'EOF'
 #!/bin/sh
-# Prelaunch script - write .env for docker-compose
+# Prelaunch script - write .env for docker-compose (non-secrets only)
 cat > .env <<'ENVEOF'
 KMS_HTTPS_PORT=12001
 AUTH_HTTP_PORT=18000
@@ -262,18 +266,28 @@ KMS_CONTRACT_ADDR=<KMS_CONTRACT_ADDR>
 DSTACK_REPO=https://github.com/Phala-Network/dstack-cloud.git
 DSTACK_REF=14963a2ccb0ec7bef8a496c1ac5ac40f5593145d
 ENVEOF
+# Overlay secrets from .user-config (KEY=VALUE per line; later values win).
+[ -f /dstack/.host-shared/.user-config ] && cat /dstack/.host-shared/.user-config >> .env
 EOF
 ```
 
 Replace `<KMS_CONTRACT_ADDR>` with the actual value.
 
-> **Datadog**: if you used `docker-compose.direct.datadog.yaml` in §6.1, append the following lines to the `ENVEOF` block:
-> ```
+`dstack-cloud new` creates `.user-config` initialized to `{}`. For the Direct RPC variant **without** Datadog, just blank it (or leave the `{}` — the prelaunch's `>>` append is harmless either way as long as `.env`-parsers ignore the `{}` line):
+
+```bash
+: > workshop-run/kms-prod/.user-config
+```
+
+> **Datadog**: if you used `docker-compose.direct.datadog.yaml` in §6.1, put the `DD_*` keys into `.user-config` (not into `prelaunch.sh`):
+> ```bash
+> cat > workshop-run/kms-prod/.user-config <<'EOF'
 > DD_API_KEY=<32-char hex from Datadog>
-> DD_SITE=datadoghq.com           # or us5.datadoghq.com etc.
+> DD_SITE=datadoghq.com
 > DD_ENV=production
 > DD_SERVICE=dstack-kms
 > DD_TAGS=env:production,service:dstack-kms
+> EOF
 > ```
 > `DD_API_KEY` must be exactly **32 alphanumeric characters**. Some sources include a human prefix (e.g. `pub<32hex>`) — paste only the 32-char body, otherwise the agent retries forever and nothing reaches Datadog (silent failure, invisible from outside the CVM). Sanity-check before deploy:
 > ```bash
@@ -608,30 +622,22 @@ Use any provider that exposes `eth_getProof`. The Alchemy free tier is sufficien
 EXECUTION_RPC=https://base-sepolia.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY>
 ```
 
-### 9.2 Replace the compose file and inject `EXECUTION_RPC`
+### 9.2 Replace the compose file and put `EXECUTION_RPC` in `.user-config`
 
 ```bash
 # Use the light template from this repository
 cp workshop/kms/docker-compose.light.yaml workshop-run/kms-prod/docker-compose.yaml
 ```
 
-The light compose templates now require `EXECUTION_RPC` in `.env` (compose will refuse to start with a clear error otherwise). The `prelaunch.sh` is the same as the Direct RPC version with one extra line — `ETH_RPC_URL` for auth-api is still ignored because the light compose hardcodes `ETH_RPC_URL=http://helios:8545`:
+The light compose templates require `EXECUTION_RPC` in `.env` (compose refuses to start with a clear error otherwise). Because the Alchemy URL is a secret, put it in `.user-config` (not in `prelaunch.sh` — see the §6.2 security boundary). The §6.2 `prelaunch.sh` already overlays `.user-config` onto `.env`, so it's reused as-is:
 
 ```bash
-cat > workshop-run/kms-prod/prelaunch.sh <<'EOF'
-#!/bin/sh
-cat > .env <<'ENVEOF'
-KMS_HTTPS_PORT=12001
-AUTH_HTTP_PORT=18000
-KMS_IMAGE=cr.kvin.wang/dstack-kms:latest
-ETH_RPC_URL=https://sepolia.base.org
+cat > workshop-run/kms-prod/.user-config <<'EOF'
 EXECUTION_RPC=https://base-sepolia.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY>
-KMS_CONTRACT_ADDR=<KMS_CONTRACT_ADDR>
-DSTACK_REPO=https://github.com/Phala-Network/dstack-cloud.git
-DSTACK_REF=14963a2ccb0ec7bef8a496c1ac5ac40f5593145d
-ENVEOF
 EOF
 ```
+
+(If you're also enabling Datadog with the light variant, add the `DD_*` lines from §6.2 to the same file.)
 
 > **Datadog (optional)**: use `workshop/kms/docker-compose.light.datadog.yaml` instead. Apply the `DD_*` env-var addition from §6.2 and the verification block from §6.5.
 

@@ -245,14 +245,18 @@ cp workshop/kms/docker-compose.direct.yaml workshop-run/kms-prod/docker-compose.
 
 > **Datadog(可选)**:改用 `workshop/kms/docker-compose.direct.datadog.yaml`,服务相同,但多一个 sidecar `datadog-agent`,把 KMS 的 Prometheus `/metrics` 和容器日志推到 Datadog。后续 §6 流程不变,只需在 §6.2 里追加 `DD_*` 环境变量,并按 §6.5 末尾的验证块自检。
 
-### 6.2 通过 prelaunch.sh 注入环境变量
+### 6.2 通过 prelaunch.sh + `.user-config` 注入环境变量
 
-编辑项目目录中的 `prelaunch.sh`，写入 docker-compose 所需的环境变量：
+> **安全边界**:`prelaunch.sh` 内容会被嵌入到 `app-compose.json` 里,而 dstack guest-agent 在 `public_tcbinfo: true`(默认)下会把 `app-compose.json` 通过 HTTP 对外公开;部署时上传到 GCS 的 shared-disk tarball 同样包含它。**千万不要把密钥放进 `prelaunch.sh`。**
+>
+> 密钥放 `.user-config`:这个文件在 CVM 内挂在 `/dstack/.host-shared/.user-config`,dstack 原样存储——**不属于 `app-compose.json`**、**不参与 measurement**(改了不会改 `mr_aggregated`,所以可以轮换密钥而不用重新链上注册)、**不会被 public TCB-info HTTP endpoint 暴露**。完整边界契约见 [`docs/security/cvm-boundaries.md`](https://github.com/Phala-Network/dstack-cloud/blob/main/docs/security/cvm-boundaries.md)。
+
+把非密钥的默认值写进 `prelaunch.sh`,然后让它把 `.user-config` 叠加到 `.env`:
 
 ```bash
 cat > workshop-run/kms-prod/prelaunch.sh <<'EOF'
 #!/bin/sh
-# Prelaunch script - write .env for docker-compose
+# Prelaunch script - write .env for docker-compose (仅非密钥)
 cat > .env <<'ENVEOF'
 KMS_HTTPS_PORT=12001
 AUTH_HTTP_PORT=18000
@@ -262,18 +266,28 @@ KMS_CONTRACT_ADDR=<KMS_CONTRACT_ADDR>
 DSTACK_REPO=https://github.com/Phala-Network/dstack-cloud.git
 DSTACK_REF=14963a2ccb0ec7bef8a496c1ac5ac40f5593145d
 ENVEOF
+# 叠加来自 .user-config 的密钥(KEY=VALUE 每行一个;后写的会覆盖)。
+[ -f /dstack/.host-shared/.user-config ] && cat /dstack/.host-shared/.user-config >> .env
 EOF
 ```
 
 替换其中的 `<KMS_CONTRACT_ADDR>` 为实际值。
 
-> **Datadog**:如果在 §6.1 选了 `docker-compose.direct.datadog.yaml`,在 `ENVEOF` 块里追加:
-> ```
+`dstack-cloud new` 创建的 `.user-config` 默认是 `{}`。Direct RPC 不带 Datadog 的话,清空即可(留着 `{}` 也行——`>>` 追加无害,`.env` 解析器会忽略不带 `=` 的行):
+
+```bash
+: > workshop-run/kms-prod/.user-config
+```
+
+> **Datadog**:如果在 §6.1 选了 `docker-compose.direct.datadog.yaml`,把 `DD_*` 写进 `.user-config`(不要写进 `prelaunch.sh`):
+> ```bash
+> cat > workshop-run/kms-prod/.user-config <<'EOF'
 > DD_API_KEY=<Datadog 给的 32 位字母数字>
-> DD_SITE=datadoghq.com           # 或 us5.datadoghq.com 等
+> DD_SITE=datadoghq.com
 > DD_ENV=production
 > DD_SERVICE=dstack-kms
 > DD_TAGS=env:production,service:dstack-kms
+> EOF
 > ```
 > `DD_API_KEY` 必须**正好 32 位字母数字**。某些下载链路会给值额外加人类前缀(比如 `pub<32hex>`),只复制 32 位的部分,否则 agent 会无声重试,什么都到不了 Datadog(CVM 外完全看不到失败)。deploy 前先 sanity-check:
 > ```bash
@@ -608,30 +622,22 @@ Helios 每次读账户都会用 `eth_getProof` 拿状态证明并对 block state
 EXECUTION_RPC=https://base-sepolia.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY>
 ```
 
-### 9.2 替换 compose 文件并注入 `EXECUTION_RPC`
+### 9.2 替换 compose 文件并把 `EXECUTION_RPC` 写到 `.user-config`
 
 ```bash
 # 使用本仓库 light 模板
 cp workshop/kms/docker-compose.light.yaml workshop-run/kms-prod/docker-compose.yaml
 ```
 
-light compose 模板现在要求 `.env` 里提供 `EXECUTION_RPC`（缺则 compose 直接报错退出）。`prelaunch.sh` 与 Direct RPC 版本基本相同，只多加一行 —— auth-api 的 `ETH_RPC_URL` 依然会被忽略，因为 light compose 已硬编码为 `http://helios:8545`：
+light compose 模板要求 `.env` 里提供 `EXECUTION_RPC`(缺则 compose 直接报错退出)。Alchemy URL 属于密钥,写进 `.user-config`(不要写进 `prelaunch.sh`,详见 §6.2 的安全边界)。§6.2 的 `prelaunch.sh` 已经把 `.user-config` 叠加到 `.env`,这里直接复用:
 
 ```bash
-cat > workshop-run/kms-prod/prelaunch.sh <<'EOF'
-#!/bin/sh
-cat > .env <<'ENVEOF'
-KMS_HTTPS_PORT=12001
-AUTH_HTTP_PORT=18000
-KMS_IMAGE=cr.kvin.wang/dstack-kms:latest
-ETH_RPC_URL=https://sepolia.base.org
+cat > workshop-run/kms-prod/.user-config <<'EOF'
 EXECUTION_RPC=https://base-sepolia.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY>
-KMS_CONTRACT_ADDR=<KMS_CONTRACT_ADDR>
-DSTACK_REPO=https://github.com/Phala-Network/dstack-cloud.git
-DSTACK_REF=14963a2ccb0ec7bef8a496c1ac5ac40f5593145d
-ENVEOF
 EOF
 ```
+
+(如果同时还要打开 Datadog,把 §6.2 里的 `DD_*` 行加到同一个文件里。)
 
 > **Datadog(可选)**:改用 `workshop/kms/docker-compose.light.datadog.yaml`,然后按 §6.2 追加 `DD_*` 环境变量、按 §6.5 末尾的验证块自检。
 
