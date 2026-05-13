@@ -672,6 +672,8 @@ jq 'keys' app_keys.json
 - `enclave_console.log` — enclave 内核启动日志（仅在设置 `DEBUG_ENCLAVE=1` 时生成，默认不存在）
 - `ncat_keys.log`
 
+> **正式取密钥时不要设置 `DEBUG_ENCLAVE=1`。** Nitro 的 `--debug-mode` 会把所有 PCR 置零，于是 `sha256(pcr0||pcr1||pcr2)` 变成全零哈希，与 §8.1 算出来并注册到链上的 `OS_IMAGE_HASH` 不同。合约会以 `App not allowed: Boot denied: OS image is not allowed` 拒绝。`DEBUG_ENCLAVE=1` 仅在你需要 `nitro-cli console` 输出排查 enclave 内部错误时启用，并且此时密钥拉取本身就不会成功。
+
 ---
 
 ## 9. 部署 KMS（生产模式：Light Client / Helios）
