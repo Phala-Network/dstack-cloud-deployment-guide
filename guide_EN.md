@@ -672,6 +672,8 @@ jq 'keys' app_keys.json
 - `enclave_console.log` — enclave kernel boot log (only generated when `DEBUG_ENCLAVE=1` is set; absent by default)
 - `ncat_keys.log`
 
+> **Do not set `DEBUG_ENCLAVE=1` for real key-retrieval runs.** Nitro's `--debug-mode` zeroes the PCR values, so `sha256(pcr0||pcr1||pcr2)` becomes the all-zero hash — different from the `OS_IMAGE_HASH` you computed in §8.1 and registered on chain. The contract will reject the boot with `App not allowed: Boot denied: OS image is not allowed`. `DEBUG_ENCLAVE=1` is only meaningful when you also want `nitro-cli console` output to diagnose enclave-internal failures, and even then you must accept that key retrieval cannot succeed.
+
 ---
 
 ## 9. Deploy KMS (Production Mode: Light Client / Helios)
